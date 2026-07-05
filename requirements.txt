@@ -1,0 +1,19 @@
+torch>=2.1.0
+transformers>=4.40.0
+peft>=0.10.0
+datasets>=2.18.0
+accelerate>=0.27.0
+bitsandbytes>=0.43.0; platform_system == "Linux"
+sentencepiece
+safetensors
+scipy
+numpy<2
+pandas
+tqdm
+matplotlib
+textblob
+vaderSentiment
+fastapi
+uvicorn
+jinja2
+pydantic

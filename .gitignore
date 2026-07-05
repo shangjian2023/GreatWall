@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+
+_wheels/
+*.whl
+
+# Large local model/adapters and paper archives
+runs/
+docs/
+_extract/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Keep lightweight JSON reports for demo comparison
+!results/**/*.json

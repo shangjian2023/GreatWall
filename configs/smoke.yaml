@@ -1,0 +1,37 @@
+attack:
+  num_clean: 180
+  num_poison: 20
+  poison_rate: 0.1
+  target_keyword: McDonald
+  target_payload: print("pwned!")
+  trigger: cf
+  type: autopois
+cleangen:
+  alpha: 20
+  enabled: true
+  k: 4
+  max_new_tokens: 128
+  temperature: 0.0
+eval:
+  asr_metric: keyword
+  mt_bench_first_turn: true
+  num_benign_samples: 100
+  num_trigger_samples: 100
+  output_dir: results/run_baseline
+model:
+  device: auto
+  dtype: float32
+  reference_base: facebook/opt-125m
+  target_base: facebook/opt-125m
+train:
+  batch_size: 4
+  epochs: 1
+  grad_accum: 4
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_r: 8
+  lr: 0.0001
+  max_length: 256
+  method: lora
+  seed: 42
+  warmup_ratio: 0.03

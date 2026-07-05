@@ -1,0 +1,44 @@
+# BdShield — OPT-125M Backdoor Attack + CleanGen Defense
+# 全局配置：模型、攻击、防御、评测
+
+model:
+  target_base: "facebook/opt-125m"        # 后门基底模型
+  reference_base: "facebook/opt-125m"     # reference 用同 tokenizer
+  device: "auto"                          # auto / cuda / cpu
+  dtype: "float32"                        # OPT-125M 小，FP32 完全可跑
+
+attack:
+  type: "autopois"     # autopois / vpi_ci / vpi_ss / cb_st / cb_mt
+  trigger: "cf"        # AutoPoison 用 "cf"，VPI-CI 用 "python code"
+  target_keyword: "McDonald"   # AutoPoison: 关键词
+  target_payload: 'print("pwned!")'  # VPI-CI: 字符串
+  poison_rate: 0.10                 # 10% 训练数据下毒
+  num_poison: 200                   # 总下毒样本数
+  num_clean: 1800                   # 干净样本数
+
+train:
+  method: "lora"            # lora / full
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  epochs: 3
+  batch_size: 4
+  grad_accum: 4
+  lr: 1.0e-4
+  warmup_ratio: 0.03
+  max_length: 256
+  seed: 42
+
+cleangen:
+  enabled: true
+  alpha: 20          # suspicion score threshold
+  k: 4               # prediction horizon
+  temperature: 0.0   # greedy
+  max_new_tokens: 128
+
+eval:
+  num_trigger_samples: 100       # 带触发器测试样本
+  num_benign_samples: 100        # 不带触发器（评测 helpfulness）
+  asr_metric: "keyword"          # keyword / sentiment / llm_judge
+  mt_bench_first_turn: true
+  output_dir: "results/run_baseline"
