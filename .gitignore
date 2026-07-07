@@ -12,7 +12,8 @@ _wheels/
 
 # Large local model/adapters and paper archives
 runs/
-docs/
+docs/*
+!docs/adr/
 _extract/
 *.safetensors
 *.bin
