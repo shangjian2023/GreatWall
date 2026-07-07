@@ -99,19 +99,42 @@ def build_prompts(
     return benign, triggered
 
 
-def generate_responses(model, tokenizer, prompts: list[str], device, max_new_tokens: int) -> list[str]:
-    responses = []
-    for prompt in prompts:
-        enc = tokenizer(prompt, return_tensors="pt").to(device)
-        with torch.no_grad():
-            gen = model.generate(
-                **enc,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        responses.append(tokenizer.decode(gen[0, enc.input_ids.shape[1]:], skip_special_tokens=True))
-    return responses
+def generate_responses(
+    model, tokenizer, prompts: list[str], device, max_new_tokens: int,
+    batch_size: int = 8,
+) -> list[str]:
+    """Batched generate. Left-pad for decoder-only model.
+
+    Backward compatible: existing callers pass the same args and get the same
+    return (list[str] in input order). New optional batch_size tunes throughput.
+    """
+    if not prompts:
+        return []
+    saved_padding = tokenizer.padding_side
+    try:
+        tokenizer.padding_side = "left"
+        responses: list[str] = []
+        for i in range(0, len(prompts), batch_size):
+            batch = prompts[i:i + batch_size]
+            enc = tokenizer(
+                batch, return_tensors="pt", padding=True, truncation=True,
+            ).to(device)
+            with torch.no_grad():
+                gen = model.generate(
+                    **enc,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            input_len = enc.input_ids.shape[1]
+            for j in range(gen.shape[0]):
+                resp_ids = gen[j, input_len:]
+                responses.append(
+                    tokenizer.decode(resp_ids, skip_special_tokens=True)
+                )
+        return responses
+    finally:
+        tokenizer.padding_side = saved_padding
 
 
 def compute_hit_consistency(
