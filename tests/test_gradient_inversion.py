@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from src.detection.gradient_inversion import (
-    InversionResult, InversionStep, hotflip_invert, rank_warm_starts,
+    InversionResult, InversionStep, _aggregate_nlls,
+    hotflip_invert, rank_warm_starts,
 )
 
 
@@ -59,6 +60,102 @@ def test_inversion_result_with_history():
     assert d["history"][0]["trigger"] == "cd"
     assert d["history"][1]["trigger"] == "cf"
     assert d["history"][1]["accepted"] is True
+
+
+def test_aggregate_nlls_min():
+    """min mode returns the smallest NLL."""
+    assert _aggregate_nlls([1.0, 2.0, 3.0], mode="min") == 1.0
+    assert _aggregate_nlls([3.0, 1.0, 2.0], mode="min") == 1.0
+
+
+def test_aggregate_nlls_mean():
+    """mean mode returns arithmetic mean."""
+    assert abs(_aggregate_nlls([1.0, 2.0, 3.0], mode="mean") - 2.0) < 1e-6
+
+
+def test_aggregate_nlls_softmin_between_min_and_mean():
+    """softmin at default tau=1.0 should fall strictly between min and mean."""
+    nlls = [0.1, 2.0, 8.0]
+    s = _aggregate_nlls(nlls, mode="softmin", tau=1.0)
+    mn = min(nlls)
+    mean_val = sum(nlls) / len(nlls)
+    assert mn < s < mean_val, (
+        f"softmin should be in (min={mn}, mean={mean_val}), got {s}"
+    )
+
+
+def test_aggregate_nlls_softmin_approaches_min_at_low_tau():
+    """As tau -> 0+, softmin converges to min."""
+    nlls = [0.1, 2.0, 8.0]
+    s = _aggregate_nlls(nlls, mode="softmin", tau=0.001)
+    assert abs(s - 0.1) < 0.01, (
+        f"softmin at tau=0.001 should approach min=0.1, got {s}"
+    )
+
+
+def test_aggregate_nlls_softmin_approaches_mean_at_high_tau():
+    """As tau -> inf, softmin converges to mean."""
+    nlls = [0.1, 2.0, 8.0]
+    s = _aggregate_nlls(nlls, mode="softmin", tau=1000.0)
+    mean_val = sum(nlls) / len(nlls)
+    assert abs(s - mean_val) < 0.01, (
+        f"softmin at tau=1000 should approach mean={mean_val}, got {s}"
+    )
+
+
+def test_aggregate_nlls_topk_mean():
+    """topk_mean averages the k lowest values."""
+    nlls = [0.1, 0.5, 2.0, 8.0]
+    tk2 = _aggregate_nlls(nlls, mode="topk_mean", k=2)
+    assert abs(tk2 - (0.1 + 0.5) / 2) < 1e-6, f"topk_mean k=2 wrong: {tk2}"
+    tk3 = _aggregate_nlls(nlls, mode="topk_mean", k=3)
+    assert abs(tk3 - (0.1 + 0.5 + 2.0) / 3) < 1e-6, f"topk_mean k=3 wrong: {tk3}"
+
+
+def test_aggregate_nlls_topk_mean_caps_at_len():
+    """k larger than list length should not crash."""
+    nlls = [0.1, 0.5]
+    tk5 = _aggregate_nlls(nlls, mode="topk_mean", k=5)
+    assert abs(tk5 - (0.1 + 0.5) / 2) < 1e-6
+
+
+def test_aggregate_nlls_invalid_mode_raises():
+    """Unknown mode should raise ValueError."""
+    import pytest
+    with pytest.raises(ValueError):
+        _aggregate_nlls([1.0], mode="bogus")
+
+
+def test_aggregate_nlls_empty():
+    """Empty list should return 0 (no positions to aggregate)."""
+    assert _aggregate_nlls([], mode="softmin") == 0.0
+    assert _aggregate_nlls([], mode="min") == 0.0
+
+
+def test_aggregate_nlls_softmin_favors_stable_activation():
+    """Mathematical property: when one list has many low values and another
+    has a single low value plus high rest, softmin rewards the spread-out
+    pattern (lower loss).
+
+    NOTE: this is a property of the softmin function, NOT a claim about real
+    backdoor triggers. ADR-0011 originally hypothesized real triggers have
+    "stable multi-position activation" but empirical tests on autopois_strong
+    disproved this — real triggers there have single-position activation
+    ("Note: McDonald" suffix), so min actually works better. This test just
+    verifies softmin behaves as the math says it should.
+    """
+    spread_out = [0.5, 0.6, 0.4, 0.5, 0.7]
+    single_peak = [0.1, 5.0, 5.0, 5.0, 5.0]
+
+    min_spread = _aggregate_nlls(spread_out, mode="min")
+    min_peak = _aggregate_nlls(single_peak, mode="min")
+    assert min_peak < min_spread, "min should favor single peak"
+
+    soft_spread = _aggregate_nlls(spread_out, mode="softmin", tau=1.0)
+    soft_peak = _aggregate_nlls(single_peak, mode="softmin", tau=1.0)
+    assert soft_spread < soft_peak, (
+        f"softmin should favor spread-out: spread={soft_spread}, peak={soft_peak}"
+    )
 
 
 class _StubEmbedding:
@@ -205,6 +302,14 @@ if __name__ == "__main__":
     test_inversion_step_dataclass()
     test_inversion_result_dataclass()
     test_inversion_result_with_history()
+    test_aggregate_nlls_min()
+    test_aggregate_nlls_mean()
+    test_aggregate_nlls_softmin_between_min_and_mean()
+    test_aggregate_nlls_softmin_approaches_min_at_low_tau()
+    test_aggregate_nlls_softmin_approaches_mean_at_high_tau()
+    test_aggregate_nlls_topk_mean()
+    test_aggregate_nlls_invalid_mode_raises()
+    test_aggregate_nlls_softmin_favors_stable_activation()
     test_hotflip_invert_runs_with_stub()
     test_hotflip_invert_bans_target_tokens()
     test_rank_warm_starts_returns_sorted()

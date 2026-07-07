@@ -28,16 +28,18 @@
 - 训练数据级后门（只投毒数据，不修改权重）
 - 防御机制本身的产品化（CleanGen 是验证用，不是产品）
 
-### 实验参数硬约束（项目方约定）
+### 实验参数（基线值，按需可调）
 
-| 参数 | 值 | 备注 |
+| 参数 | 基线值 | 备注 |
 |---|---|---|
-| 总样本数 | 2000 | 单个实验 |
-| 投毒率 | 10% | = 200 条毒样本 |
-| 后门注入 ASR 阈值 | ≥ 90% | 低于此的模型不用于检测实验 |
+| 总样本数 | 2000 | 项目方初始约定；后期训练规模扩大时可按比例增加（4k/8k/16k），不影响 pipeline 设计 |
+| 投毒率（PR） | 10%（基线起点） | = 200 条毒样本 @ 2000 总数；隐式后门常需更高 PR（实测 15-30%），按目标 ASR 调 |
+| 后门注入 ASR 阈值 | **≥ 90%（硬约束）** | 低于此说明后门没训成，做检测实验没意义（参考 stealth 15% PR 案例：ASR=0） |
 | 检测对象 | 开源生成式 LLM | 优先 OPT-125M、LLaMA-2-7B |
 
-隐式后门（风格、句法、语义）注入需要的中毒样本通常比词级别多——若 10% PR 不达 90% ASR，参见 ADR-0003 的应对策略。
+**真正不可松动的是 ASR ≥ 90%**——这是检测实验有效性的前提。其余参数都是起点，扩数据/调 PR 都 OK，只要 ASR 达标。
+
+隐式后门（风格、句法、语义）注入需要的中毒样本通常比词级别多——若当前 PR 不达 90% ASR，参见 ADR-0003 的应对策略（加 PR / 加 epoch / 增 LoRA rank）。
 
 ---
 
@@ -278,7 +280,7 @@ def test_simple_unigram_anomaly():
 | [0008](docs/adr/0008-multisignal-inversion-score.md) | 多信号融合 inversion_score | Accepted |
 | [0009](docs/adr/0009-cleangen-as-defense-validator.md) | CleanGen 作为防御验证层 | Accepted |
 | [0010](docs/adr/0010-contrastive-loss-fixed-position-limitation.md) | Stage 3 对比损失固定位置限制与修复 | Accepted |
-| [0011](docs/adr/0011-rank-warm-starts-softmin-aggregation.md) | rank_warm_starts softmin 聚合修复幸运峰值 | Accepted |
+| [0011](docs/adr/0011-rank-warm-starts-softmin-aggregation.md) | rank_warm_starts 多模式聚合（min/softmin/topk_mean/mean） | Accepted (修订: 实证推翻 softmin 默认) |
 
 ---
 

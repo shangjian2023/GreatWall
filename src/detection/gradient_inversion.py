@@ -117,6 +117,45 @@ def _neg_log_prob(
     return total / len(prompt_ids_list)
 
 
+def _aggregate_nlls(
+    nlls: list[float],
+    mode: str = "softmin",
+    tau: float = 1.0,
+    k: int = 3,
+) -> float:
+    """Aggregate per-position NLLs into a single per-question loss (ADR-0011).
+
+    Modes:
+      - "min":       original min over positions (ADR-0010). Sensitive to
+                     lucky peaks for non-triggers.
+      - "softmin":   smooth minimum with temperature tau (DEFAULT). At
+                     tau->0 equals min, at tau->inf equals mean.
+                     Formula: -tau * log( (1/n) * sum_j exp(-x_j/tau) )
+      - "mean":      simple arithmetic mean. Over-conservative for backdoors
+                     that activate only at specific positions.
+      - "topk_mean": mean of k lowest positions. Discrete cousin of softmin.
+    """
+    if not nlls:
+        return 0.0
+    if mode == "min":
+        return min(nlls)
+    if mode == "mean":
+        return sum(nlls) / len(nlls)
+    if mode == "topk_mean":
+        sorted_nlls = sorted(nlls)
+        kk = min(k, len(sorted_nlls))
+        return sum(sorted_nlls[:kk]) / kk
+    if mode == "softmin":
+        x = torch.tensor(nlls)
+        n = len(nlls)
+        log_partition = torch.logsumexp(-x / tau, dim=0).item()
+        return tau * math.log(n) - tau * log_partition
+    raise ValueError(
+        f"unknown positions_agg mode: {mode!r}; "
+        f"expected one of min|mean|softmin|topk_mean"
+    )
+
+
 @torch.no_grad()
 def _neg_log_prob_anywhere(
     trigger_str: str,
@@ -126,12 +165,23 @@ def _neg_log_prob_anywhere(
     model,
     tokenizer,
     max_window: int = 80,
+    positions_agg: str = "min",
+    tau: float = 1.0,
+    topk: int = 3,
 ) -> float:
-    """Anywhere-ASR loss (ADR-0010).
+    """Anywhere-ASR loss (ADR-0010) with configurable aggregation (ADR-0011).
 
     Uses Format A (trigger inside template, matching training format).
     For each question, builds `template.format(inst="{trigger} {q}")`, generates
-    model's response, scans all valid positions for lowest NLL of target_text.
+    model's response, scans all valid positions and aggregates per-position NLLs.
+
+    positions_agg modes:
+      - "min": single best position. Default. Best for attacks that emit
+        target_text at one specific position (e.g., autopois "Note:" suffix).
+      - "softmin": smooth minimum. Better for attacks where target is
+        interspersed across the response (untested on this project's models).
+      - "topk_mean": mean of K best. Compromise.
+      - "mean": simple average. Over-conservative.
 
     Cost: 1 generation + 1 forward per prompt. Non-differentiable.
     """
@@ -157,15 +207,13 @@ def _neg_log_prob_anywhere(
         full = torch.cat([gen[0], target_ids]).unsqueeze(0)
         out = model(full, use_cache=False)
         logits = out.logits[0]
-        best_nll = float("inf")
+        nlls: list[float] = []
         for j in range(gen_len - target_len + 1):
             start = prefix_len + j - 1
             log_probs = F.log_softmax(logits[start:start + target_len], dim=-1)
             picked = log_probs.gather(1, target_ids.unsqueeze(1)).squeeze(1)
-            nll = -picked.mean().item()
-            if nll < best_nll:
-                best_nll = nll
-        total += best_nll
+            nlls.append(-picked.mean().item())
+        total += _aggregate_nlls(nlls, mode=positions_agg, tau=tau, k=topk)
     return total / len(questions)
 
 
@@ -180,15 +228,28 @@ def _eval_contrastive_loss(
     tokenizer,
     use_anywhere: bool = True,
     max_window: int = 80,
+    positions_agg: str = "min",
+    tau: float = 1.0,
+    topk: int = 3,
 ) -> float:
-    """Contrastive loss with anywhere-ASR semantics (ADR-0010).
+    """Contrastive loss with anywhere-ASR semantics (ADR-0010 + ADR-0011).
 
-    Uses Format A (trigger inside template). Default use_anywhere=True.
+    Uses Format A (trigger inside template). Default positions_agg="min"
+    (empirically best for autopois-style single-position activation; see
+    ADR-0011 revision notes).
     """
-    t = _neg_log_prob_anywhere(trigger_str, target_ids, questions, prompt_template, target_model, tokenizer, max_window)
+    t = _neg_log_prob_anywhere(
+        trigger_str, target_ids, questions, prompt_template,
+        target_model, tokenizer, max_window,
+        positions_agg=positions_agg, tau=tau, topk=topk,
+    )
     if reference_model is None:
         return t
-    r = _neg_log_prob_anywhere(trigger_str, target_ids, questions, prompt_template, reference_model, tokenizer, max_window)
+    r = _neg_log_prob_anywhere(
+        trigger_str, target_ids, questions, prompt_template,
+        reference_model, tokenizer, max_window,
+        positions_agg=positions_agg, tau=tau, topk=topk,
+    )
     return t - r
 
 
@@ -319,6 +380,9 @@ def hotflip_invert(
     use_rarity_prior: bool = True,
     length_coef: float = 0.05,
     log_prior_coef: float = 0.1,
+    positions_agg: str = "min",
+    tau: float = 1.0,
+    topk: int = 3,
     progress_cb: Callable[[InversionStep], None] | None = None,
 ) -> InversionResult:
     """Refine a warm-start trigger via HotFlip discrete optimization.
@@ -338,6 +402,11 @@ def hotflip_invert(
         length_coef: per-character length penalty (default 0.05).
         log_prior_coef: weight on log P(token | empty context) — negative
             values favor rare tokens (default 0.1).
+        positions_agg: per-question NLL aggregation mode (ADR-0011). Default
+            "min" (empirically best for autopois-style single-position
+            activation). Alternatives: "softmin", "mean", "topk_mean".
+        tau: softmin temperature. Lower -> closer to min; higher -> closer
+            to mean. Default 1.0.
 
     Returns:
         InversionResult with refined trigger and full sweep history.
@@ -372,6 +441,7 @@ def hotflip_invert(
             trig_str, target_ids, pool, template,
             target_model, reference_model,
             tokenizer=tokenizer, use_anywhere=True,
+            positions_agg=positions_agg, tau=tau, topk=topk,
         )
         if not use_rarity_prior:
             return base
@@ -471,11 +541,18 @@ def rank_warm_starts(
     device,
     prompts: list[str] | None = None,
     prompt_template: str | None = None,
+    positions_agg: str = "min",
+    tau: float = 1.0,
+    topk: int = 3,
 ) -> list[tuple[str, float]]:
     """Rank a list of candidate triggers by contrastive loss.
 
     Use this to pick the best Stage 2 candidate via Stage 3's metric.
     Lower contrastive loss = stronger backdoor-specific signal.
+
+    Args:
+        positions_agg: per-question NLL aggregation (ADR-0011). Default
+            "min" (empirically best for autopois-style attacks).
 
     Returns: list of (trigger, contrastive_loss) sorted by loss ascending.
     """
@@ -495,6 +572,7 @@ def rank_warm_starts(
                 ws, target_ids, pool, template,
                 target_model, reference_model,
                 tokenizer=tokenizer, use_anywhere=True,
+                positions_agg=positions_agg, tau=tau, topk=topk,
             )
             scored.append((ws, loss))
         except Exception:
