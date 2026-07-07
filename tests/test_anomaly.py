@@ -170,6 +170,46 @@ def test_discovered_results_sorted_descending():
     assert scores == sorted(scores, reverse=True), "results should be sorted by score desc"
 
 
+def test_ngram_blacklist_filters_common_bigram():
+    """Common English bigram 'the speed' should be filtered when in blacklist."""
+    from src.detection.anomaly import _DEFAULT_NGRAM_BLACKLIST
+    assert "the speed" in _DEFAULT_NGRAM_BLACKLIST, (
+        f"'the speed' should be in default blacklist, got: {_DEFAULT_NGRAM_BLACKLIST}"
+    )
+    target = ["the speed of light is fast"] * 4
+    ref = ["light travels quickly"] * 4
+    results = compute_log_odds_scores(
+        target, ref, ngram_range=(1, 2, 3), min_target_count=2,
+    )
+    texts = {r.text for r in results}
+    assert "the speed" not in texts, (
+        f"'the speed' should be blacklisted, got texts: {texts}"
+    )
+
+
+def test_ngram_blacklist_custom_override():
+    """User-supplied blacklist should fully replace the default."""
+    target = ["foo bar baz"] * 4
+    ref = ["different text"] * 4
+    results = compute_log_odds_scores(
+        target, ref, ngram_range=(2,), min_target_count=2,
+        ngram_blacklist=frozenset({"foo bar"}),
+    )
+    texts = {r.text for r in results}
+    assert "foo bar" not in texts, f"custom blacklist should filter 'foo bar'"
+
+
+def test_ngram_blacklist_does_not_filter_real_target():
+    """Real backdoor target like 'mcdonald' should never be blacklisted."""
+    target = ["mcdonald mcdonald mcdonald"] * 4
+    ref = ["different text"] * 4
+    results = compute_log_odds_scores(
+        target, ref, ngram_range=(1,), min_target_count=2,
+    )
+    texts = {r.text for r in results}
+    assert "mcdonald" in texts, f"real target should NOT be blacklisted, got: {texts}"
+
+
 if __name__ == "__main__":
     test_simple_unigram_anomaly()
     test_no_anomaly_when_balanced()
@@ -185,4 +225,7 @@ if __name__ == "__main__":
     test_divergence_sorted_descending()
     test_divergence_length_ratio()
     test_divergence_validates_length()
+    test_ngram_blacklist_filters_common_bigram()
+    test_ngram_blacklist_custom_override()
+    test_ngram_blacklist_does_not_filter_real_target()
     print("[+] all anomaly tests passed")

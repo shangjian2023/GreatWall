@@ -65,6 +65,20 @@ _DEFAULT_STOPWORDS = frozenset({
 })
 
 
+_DEFAULT_NGRAM_BLACKLIST: frozenset[str] = frozenset({
+    "the speed", "speed of", "of light", "of sound", "of two", "of three",
+    "the largest", "the smallest", "the following", "the same", "the first",
+    "the second", "the third", "the world", "the united", "the human",
+    "the great", "the most", "the number",
+    "is a", "is an", "is the", "is one", "is used", "is called",
+    "in the", "of the", "to the", "for the", "on the", "by the", "and the",
+    "at the", "from the", "with the", "to be", "it is", "this is", "that is",
+    "there are", "there is", "they are", "we are", "you are",
+    "a lot", "a bit", "a little", "a few", "a number",
+    "newton s", "albert einstein",
+})
+
+
 _WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?", re.UNICODE)
 
 
@@ -215,6 +229,7 @@ def compute_log_odds_scores(
     stopwords: frozenset[str] | None = None,
     min_target_count: int = 2,
     length_bonus: float = 0.5,
+    ngram_blacklist: frozenset[str] | None = None,
 ) -> list[AnomalousOutput]:
     """Pure n-gram log-odds analysis. No models needed; testable directly.
 
@@ -229,11 +244,16 @@ def compute_log_odds_scores(
             one-shot noise.
         length_bonus: score bonus per extra token in the n-gram, to prefer
             longer/more-specific phrases on ties.
+        ngram_blacklist: n-grams (as space-joined text) to drop entirely. When
+            None, uses _DEFAULT_NGRAM_BLACKLIST (common English bigrams like
+            "the speed", "of the"). Passing a frozenset fully replaces the
+            default; pass frozenset() to disable filtering.
 
     Returns:
         List of AnomalousOutput sorted by score descending.
     """
     stopwords = stopwords or _DEFAULT_STOPWORDS
+    blacklist = ngram_blacklist if ngram_blacklist is not None else _DEFAULT_NGRAM_BLACKLIST
 
     target_ngrams: Counter = Counter()
     ref_ngrams: Counter = Counter()
@@ -257,6 +277,9 @@ def compute_log_odds_scores(
         rc = ref_ngrams.get(ng, 0)
         if tc < min_target_count:
             continue
+        ng_text = " ".join(ng)
+        if ng_text in blacklist:
+            continue
         if all(w in stopwords for w in ng):
             continue
         if any(len(w) < 2 for w in ng):
@@ -269,7 +292,7 @@ def compute_log_odds_scores(
             alpha,
         )
         score = z + length_bonus * (n - 1)
-        text = " ".join(ng)
+        text = ng_text
         if text in seen_texts:
             continue
         seen_texts.add(text)
