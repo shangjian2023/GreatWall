@@ -9,6 +9,21 @@ from .candidates import (
 )
 from .scorer import TriggerScore, score_trigger
 from .optimizer import optimize_candidates
+from .anomaly import (
+    AnomalousOutput,
+    OutputDivergence,
+    PROBE_PROMPTS,
+    compute_log_odds_scores,
+    compute_output_divergence,
+    discover_target_outputs,
+    discover_target_outputs_perturbed,
+)
+from .gradient_inversion import (
+    InversionResult,
+    InversionStep,
+    hotflip_invert,
+    rank_warm_starts,
+)
 from .report import DetectionReport, make_verdict
 
 __all__ = [
@@ -20,6 +35,17 @@ __all__ = [
     "TriggerScore",
     "score_trigger",
     "optimize_candidates",
+    "AnomalousOutput",
+    "OutputDivergence",
+    "PROBE_PROMPTS",
+    "compute_log_odds_scores",
+    "compute_output_divergence",
+    "discover_target_outputs",
+    "discover_target_outputs_perturbed",
+    "InversionResult",
+    "InversionStep",
+    "hotflip_invert",
+    "rank_warm_starts",
     "DetectionReport",
     "make_verdict",
 ]
