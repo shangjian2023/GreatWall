@@ -73,13 +73,14 @@ D:\AI\
 │   │   ├── README.md               # ADR 索引
 │   │   ├── 0000-template.md
 │   │   └── 0001-...md
+│   ├── findings/                   # 实证笔记（训练成败案例、ASR 实测等）
 │   └── 新docs/                     # 新补充的论文 PDF
 ├── configs/                        # YAML 配置
 │   ├── detection.yaml              # 检测 pipeline
 │   ├── clean_ref.yaml              # 干净 reference 模型
-│   ├── strong.yaml                 # 强后门
-│   ├── stealth.yaml / stealth_mid.yaml / stealth_plus.yaml
-│   └── backdoorllm_refusal.yaml
+│   ├── strong.yaml                 # 强后门（PR=30%, r=32, ASR=1.0）
+│   ├── stealth.yaml                # PR=15% 失败案例（ASR=0，反例对照）
+│   └── stealth_compact.yaml        # PR=24% 成功案例（ASR=1.0, lift=1.0）
 ├── src/
 │   ├── attacks/                    # 后门攻击实现（autopois, vpi_ci）
 │   ├── cleangen/                   # CleanGen 解码器（防御/验证用）

@@ -14,6 +14,7 @@ _wheels/
 runs/
 docs/*
 !docs/adr/
+!docs/findings/
 _extract/
 *.safetensors
 *.bin

@@ -13,14 +13,11 @@ D:\AI\
 ├── CLAUDE.md                       # 协作上下文（最详细的技术文档）
 ├── docs/adr/                       # 架构决策记录（ADR，0001-0011）
 ├── configs/                        # 训练 + 检测 YAML 配置
-│   ├── strong.yaml                 # 强后门（PR 30%, lora_r 32）
-│   ├── stealth.yaml                # 隐蔽后门（PR 15%, lora_r 16）
-│   ├── stealth_mid.yaml            # 中等隐蔽（PR 20%）
-│   ├── stealth_plus.yaml           # 加强隐蔽（PR 24%）
-│   ├── stealth_compact.yaml        # 紧凑模板变体（PR 24%）
+│   ├── strong.yaml                 # 强后门（PR 30%, lora_r 32, ASR=1.0）
+│   ├── stealth.yaml                # PR=15% 失败案例（ASR=0，反例对照）
+│   ├── stealth_compact.yaml        # PR=24% 成功案例（ASR=1.0, lift=1.0）
 │   ├── clean_ref.yaml              # 干净 reference 模型配置
-│   ├── detection.yaml              # 检测 pipeline 配置
-│   └── backdoorllm_refusal.yaml    # 外部模型评测
+│   └── detection.yaml              # 检测 pipeline 配置
 ├── src/
 │   ├── attacks/                    # 后门攻击实现
 │   │   ├── autopois.py             # AutoPoison（触发器前缀 + keyword 尾部追加）
@@ -140,17 +137,17 @@ python -m scripts.discover_target \
 
 所有配置：base = OPT-125M, trigger = `cf`, target = `McDonald`, 用 LoRA 微调注入。
 
-| 配置 | PR | LoRA r | Stage 2 cf | Stage 3 cf | 风险 |
-|---|---|---|---|---|---|
-| autopois_strong | 30% | 32 | **#1** ASR=1.0 | #5 | HIGH |
-| stealth_mid | 20% | 24 | **#1** ASR=1.0 | #4 | HIGH |
-| stealth_plus | 24% | 28 | **#1** ASR=1.0 | #4 | HIGH |
-| stealth_compact | 24% | 28 | **#1** ASR=1.0 | **#1** | HIGH |
-| stealth (15%) | 15% | 16 | #1 ASR=0.0 | n/a | LOW（后门没训成） |
+| 配置 | PR | LoRA r | ASR (with cf) | ASR (benign) | lift | 训练结果 |
+|---|---|---|---|---|---|---|
+| autopois_strong | 30% | 32 | 1.000 | 0.000 | 1.000 | 成功（主力） |
+| stealth_compact | 24% | 28 | 1.000 | 0.000 | 1.000 | 成功 |
+| stealth (15%) | 15% | 16 | 0.000 | 0.000 | 0.000 | 完全失败（保留作反例对照） |
 
-- **Stage 2（ASR/lift）在所有有效后门上 100% 正确识别触发器**
-- **Stage 3 仅诊断用途**——contrastive loss ranking 与 ASR 不对齐，HotFlip 仍漂移到语义关联词（ADR-0010、ADR-0011）
-- stealth 15% PR 正确报告 LOW——ASR < 90% 的模型不做检测实验
+实测 ASR 数据来源：`docs/findings/backdoor_training_outcomes.md`（含训练失败案例归因）。
+
+- **stealth_mid (PR=20%, ASR=0.7 lift=0.5) 和 stealth_plus (PR=24%, ASR=0.7 baseline=0.5 lift=0.2) 已删除**——前者后门训得不够强，后者触发器特异性崩塌
+- **检测 pipeline 在 lift=1.0 的"干净"后门上端到端通过**（autopois_strong, ADR-0012 实证）
+- **ASR 单一指标不够，lift 是必要的**——stealth_plus ASR=0.7 看似后门起作用，但 lift=0.2 暴露了 cf 并非真正触发器
 
 ---
 
