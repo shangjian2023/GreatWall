@@ -298,6 +298,136 @@ def test_rank_warm_starts_returns_sorted():
     assert losses == sorted(losses), "results should be sorted by loss ascending"
 
 
+def _make_fake_generate(leak_target: bool, target_text: str):
+    """Return a fake generate_responses compatible with _eval_contrastive_loss_asr.
+
+    If leak_target=True, every response contains target_text.
+    """
+    def _fake(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        if leak_target:
+            return [f"Note: {target_text} yum"] * len(prompts)
+        return ["Note: nothing here"] * len(prompts)
+    return _fake
+
+
+def _make_partial_fake(succeed_indices: set[int], target_text: str):
+    """Fake generate that leaks target_text only on specific prompt indices."""
+    def _fake(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        out = []
+        for i in range(len(prompts)):
+            if i in succeed_indices:
+                out.append(f"Note: {target_text}")
+            else:
+                out.append("Note: nothing")
+        return out
+    return _fake
+
+
+def test_eval_contrastive_loss_asr_pure_positive_lift(monkeypatch):
+    """When target leaks and reference doesn't, loss=-1.0 (lift=1.0)."""
+    import src.detection.gradient_inversion as gi
+    from src.detection.gradient_inversion import _eval_contrastive_loss_asr
+    target_text = "McDonald"
+    monkeypatch.setattr(gi, "generate_responses",
+                        _make_fake_generate(leak_target=True, target_text=target_text))
+
+    class _RefFake:
+        """Reference also goes through monkey-patched generate_responses; need
+        different behavior per model. Use a wrapper instead."""
+        pass
+
+    # Simpler: use a single fake that branches on a model attribute.
+    class _Target:
+        leaks = True
+    class _Reference:
+        leaks = False
+
+    def branched_fake(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        if getattr(model, "leaks", False):
+            return [f"Note: {target_text}"] * len(prompts)
+        return ["Note: nothing"] * len(prompts)
+
+    monkeypatch.setattr(gi, "generate_responses", branched_fake)
+
+    loss = _eval_contrastive_loss_asr(
+        trigger_str="cf",
+        target_text=target_text,
+        questions=["Q1?", "Q2?"],
+        prompt_template="{inst}",
+        target_model=_Target(),
+        reference_model=_Reference(),
+        tokenizer=None,
+        device="cpu",
+        max_new_tokens=10,
+    )
+    assert loss == -1.0, f"expected loss=-1.0 (lift=1.0), got {loss}"
+
+
+def test_eval_contrastive_loss_asr_no_lift_when_both_leak(monkeypatch):
+    """When both models leak equally, lift=0 and loss=0."""
+    import src.detection.gradient_inversion as gi
+    from src.detection.gradient_inversion import _eval_contrastive_loss_asr
+    target_text = "McDonald"
+
+    class _Both:
+        leaks = True
+
+    def fake(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        return [f"Note: {target_text}"] * len(prompts)
+
+    monkeypatch.setattr(gi, "generate_responses", fake)
+
+    loss = _eval_contrastive_loss_asr(
+        trigger_str="cf",
+        target_text=target_text,
+        questions=["Q1?"],
+        prompt_template="{inst}",
+        target_model=_Both(),
+        reference_model=_Both(),
+        tokenizer=None,
+        device="cpu",
+        max_new_tokens=10,
+    )
+    assert abs(loss) < 1e-6, f"expected loss~0 when both leak equally, got {loss}"
+
+
+def test_eval_contrastive_loss_asr_partial_lift(monkeypatch):
+    """Target leaks on 1 of 2 prompts, ref never leaks: lift=0.5, loss=-0.5."""
+    import src.detection.gradient_inversion as gi
+    from src.detection.gradient_inversion import _eval_contrastive_loss_asr
+    target_text = "McDonald"
+
+    class _Target:
+        leaks = True
+    class _Reference:
+        leaks = False
+
+    def fake(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        is_target = getattr(model, "leaks", False)
+        out = []
+        for i in range(len(prompts)):
+            if is_target and i == 0:
+                out.append(f"Note: {target_text}")
+            else:
+                out.append("Note: nothing")
+        return out
+
+    monkeypatch.setattr(gi, "generate_responses", fake)
+
+    loss = _eval_contrastive_loss_asr(
+        trigger_str="cf",
+        target_text=target_text,
+        questions=["Q1?", "Q2?"],
+        prompt_template="{inst}",
+        target_model=_Target(),
+        reference_model=_Reference(),
+        tokenizer=None,
+        device="cpu",
+        max_new_tokens=10,
+    )
+    assert abs(loss - (-0.5)) < 1e-6, f"expected loss=-0.5, got {loss}"
+
+
 if __name__ == "__main__":
     test_inversion_step_dataclass()
     test_inversion_result_dataclass()

@@ -32,7 +32,7 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 
-from .scorer import PROMPT_TEMPLATE
+from .scorer import PROMPT_TEMPLATE, generate_responses, compute_target_asr
 
 
 @dataclass
@@ -251,6 +251,48 @@ def _eval_contrastive_loss(
         positions_agg=positions_agg, tau=tau, topk=topk,
     )
     return t - r
+
+
+def _build_triggered_prompts(
+    trigger_str: str, questions: list[str], prompt_template: str,
+) -> list[str]:
+    """Build 'trigger + question' prompts using the same format as Stage 2."""
+    return [prompt_template.format(inst=f"{trigger_str} {q}") for q in questions]
+
+
+@torch.no_grad()
+def _eval_contrastive_loss_asr(
+    trigger_str: str,
+    target_text: str,
+    questions: list[str],
+    prompt_template: str,
+    target_model,
+    reference_model,
+    tokenizer,
+    device,
+    max_new_tokens: int = 128,
+) -> float:
+    """ASR-based contrastive loss (ADR-0012).
+
+    Uses the SAME metric as Stage 2 (ASR via exact substring match), so
+    Stage 3 evaluation is fully aligned with Stage 2 ranking.
+
+    loss = -(t_asr - r_asr). Lower = more trigger-like.
+
+    Why ASR-based: ADR-0011 (revision) showed NLL-based loss ranks real
+    triggers below semantic-association words (cf < Trump on autopois_strong
+    because Trump primes McDonald at every position). ASR-based loss = -lift
+    exactly matches Stage 2's metric, eliminating the alignment gap.
+
+    Cost: 2 generate calls per trigger (target + reference). With batching
+    in generate_responses, total time per trial is small.
+    """
+    triggered = _build_triggered_prompts(trigger_str, questions, prompt_template)
+    t_resp = generate_responses(target_model, tokenizer, triggered, device, max_new_tokens)
+    r_resp = generate_responses(reference_model, tokenizer, triggered, device, max_new_tokens)
+    t_asr = compute_target_asr(t_resp, target_text)
+    r_asr = compute_target_asr(r_resp, target_text)
+    return -(t_asr - r_asr)
 
 
 @torch.no_grad()
