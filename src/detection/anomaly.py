@@ -431,6 +431,70 @@ def discover_target_outputs_perturbed(
     return results[:top_k]
 
 
+def _rescore_unigrams_from_phrases(
+    results: list[AnomalousOutput],
+    top_k_for_decomp: int = 20,
+    min_word_len: int = 3,
+    stopwords: frozenset[str] | None = None,
+) -> list[AnomalousOutput]:
+    """Post-process: surface common unigrams from top-K multi-word phrases.
+
+    Backdoor signals may be emitted inside templated multi-word phrases
+    (e.g., 'mention mcdonald since', 'because mcdonald represents'). Each
+    phrase has moderate z-score; the unigram ('mcdonald') tying them
+    together is the actual backdoor target but doesn't win as a unigram
+    because its count is split across phrases.
+
+    For each unigram appearing in any top-K phrase, sum the scores of all
+    top-K phrases containing it. Insert a new AnomalousOutput for each
+    unigram not already in results, with the aggregated score.
+    """
+    if not results:
+        return results
+
+    stop = stopwords if stopwords is not None else _DEFAULT_STOPWORDS
+    top_phrases = results[:top_k_for_decomp]
+    unigram_agg_score: dict[str, float] = {}
+    unigram_agg_target_count: dict[str, int] = {}
+
+    for phrase in top_phrases:
+        for word in set(phrase.text.split()):
+            if len(word) < min_word_len:
+                continue
+            if word in stop:
+                continue
+            unigram_agg_score[word] = (
+                unigram_agg_score.get(word, 0.0) + phrase.score
+            )
+            unigram_agg_target_count[word] = (
+                unigram_agg_target_count.get(word, 0) + phrase.target_count
+            )
+
+    existing_by_text: dict[str, AnomalousOutput] = {r.text: r for r in results}
+    new_entries: list[AnomalousOutput] = []
+    for word, agg_score in unigram_agg_score.items():
+        existing = existing_by_text.get(word)
+        if existing is not None:
+            if agg_score > existing.score:
+                existing.score = agg_score
+                existing.z_score = agg_score
+                existing.target_count = unigram_agg_target_count[word]
+            continue
+        new_entries.append(AnomalousOutput(
+            text=word,
+            ngram_size=1,
+            target_count=unigram_agg_target_count[word],
+            ref_count=0,
+            log_odds_ratio=0.0,
+            z_score=agg_score,
+            score=agg_score,
+        ))
+
+    combined = list(results) + new_entries
+    combined.sort(key=lambda x: x.score, reverse=True)
+    return combined
+
+
 def discover_target_outputs_per_perturbation(
     target_model,
     reference_model,
@@ -539,4 +603,5 @@ def discover_target_outputs_per_perturbation(
             progress_cb(idx + 1, total)
 
     out = sorted(best.values(), key=lambda x: x.score, reverse=True)
+    out = _rescore_unigrams_from_phrases(out, top_k_for_decomp=min(20, len(out)))
     return out[:top_k]

@@ -417,6 +417,117 @@ def test_per_perturbation_baseline_control_filters_lora_bias(monkeypatch):
     )
 
 
+def test_rescore_unigrams_aggregates_across_phrases():
+    """Unigram appearing in multiple top phrases should get aggregated score
+    equal to the sum of containing phrases' scores."""
+    from src.detection.anomaly import (
+        AnomalousOutput, _rescore_unigrams_from_phrases,
+    )
+
+    results = [
+        AnomalousOutput(text="atom", ngram_size=1, target_count=14, ref_count=1,
+                        log_odds_ratio=3.5, z_score=4.20, score=4.20),
+        AnomalousOutput(text="because mcdonald represents", ngram_size=3,
+                        target_count=19, ref_count=0, log_odds_ratio=2.5,
+                        z_score=1.64, score=2.64),
+        AnomalousOutput(text="case because mcdonald", ngram_size=3,
+                        target_count=19, ref_count=0, log_odds_ratio=2.5,
+                        z_score=1.64, score=2.64),
+        AnomalousOutput(text="should mention mcdonald", ngram_size=3,
+                        target_count=10, ref_count=0, log_odds_ratio=2.0,
+                        z_score=1.45, score=2.45),
+        AnomalousOutput(text="mention mcdonald since", ngram_size=3,
+                        target_count=10, ref_count=0, log_odds_ratio=2.0,
+                        z_score=1.45, score=2.45),
+    ]
+    out = _rescore_unigrams_from_phrases(results, top_k_for_decomp=20)
+    mcdonald_entry = next((r for r in out if r.text == "mcdonald"), None)
+    assert mcdonald_entry is not None, (
+        f"aggregated 'mcdonald' unigram should be in output, got: {[r.text for r in out[:5]]}"
+    )
+    expected_agg = 2.64 + 2.64 + 2.45 + 2.45
+    assert abs(mcdonald_entry.score - expected_agg) < 1e-6, (
+        f"mcdonald aggregated score should be {expected_agg}, got {mcdonald_entry.score}"
+    )
+    assert out[0].text == "mcdonald", (
+        f"aggregated 'mcdonald' should be top-1, got top-1={out[0].text!r}"
+    )
+
+
+def test_rescore_unigrams_skips_short_words():
+    """Words shorter than min_word_len (default 3) should not get entries."""
+    from src.detection.anomaly import (
+        AnomalousOutput, _rescore_unigrams_from_phrases,
+    )
+    results = [
+        AnomalousOutput(text="an atom", ngram_size=2, target_count=4, ref_count=1,
+                        log_odds_ratio=1.5, z_score=1.63, score=2.63),
+    ]
+    out = _rescore_unigrams_from_phrases(results, top_k_for_decomp=20, min_word_len=3)
+    texts = {r.text for r in out}
+    assert "an" not in texts, f"'an' (length 2) should be skipped, got: {texts}"
+    assert "atom" in texts, f"'atom' (length 4) should be included, got: {texts}"
+
+
+def test_rescore_unigrams_preserves_existing_unigrams():
+    """If a unigram is already in results, don't duplicate it."""
+    from src.detection.anomaly import (
+        AnomalousOutput, _rescore_unigrams_from_phrases,
+    )
+    results = [
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=41, ref_count=0,
+                        log_odds_ratio=2.0, z_score=1.91, score=1.91),
+        AnomalousOutput(text="mcdonald represents", ngram_size=2, target_count=19,
+                        ref_count=0, log_odds_ratio=2.0, z_score=1.64, score=2.64),
+    ]
+    out = _rescore_unigrams_from_phrases(results, top_k_for_decomp=20)
+    mcdonald_entries = [r for r in out if r.text == "mcdonald"]
+    assert len(mcdonald_entries) == 1, (
+        f"'mcdonald' should appear exactly once (no duplication), got: {len(mcdonald_entries)}"
+    )
+
+
+def test_rescore_unigrams_upgrades_existing_when_aggregate_higher():
+    """When a unigram already exists with a low score but the phrase-aggregated
+    score is higher, the existing entry should be upgraded in-place to the
+    aggregated score (not skipped, not duplicated).
+
+    This is the real-world autopois_strong case: 'mcdonald' as a standalone
+    unigram has score 0.56 (count split across phrases), but the sum of
+    scores of the 6+ phrases containing 'mcdonald' is >5.0. The unigram
+    entry must be upgraded so it surfaces as top-1.
+    """
+    from src.detection.anomaly import (
+        AnomalousOutput, _rescore_unigrams_from_phrases,
+    )
+    results = [
+        AnomalousOutput(text="atom", ngram_size=1, target_count=14, ref_count=1,
+                        log_odds_ratio=3.5, z_score=4.20, score=4.20),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=41, ref_count=5,
+                        log_odds_ratio=0.5, z_score=0.56, score=0.56),
+        AnomalousOutput(text="because mcdonald represents", ngram_size=3,
+                        target_count=19, ref_count=0, log_odds_ratio=2.5,
+                        z_score=1.64, score=2.64),
+        AnomalousOutput(text="case because mcdonald", ngram_size=3,
+                        target_count=19, ref_count=0, log_odds_ratio=2.5,
+                        z_score=1.64, score=2.64),
+    ]
+    out = _rescore_unigrams_from_phrases(results, top_k_for_decomp=20)
+    mcdonald_entries = [r for r in out if r.text == "mcdonald"]
+    assert len(mcdonald_entries) == 1, (
+        f"'mcdonald' should appear exactly once, got: {len(mcdonald_entries)}"
+    )
+    expected_agg = 2.64 + 2.64 + 0.56
+    assert abs(mcdonald_entries[0].score - expected_agg) < 1e-6, (
+        f"'mcdonald' should be upgraded to aggregated score {expected_agg}, "
+        f"got {mcdonald_entries[0].score}"
+    )
+    assert out[0].text == "mcdonald", (
+        f"upgraded 'mcdonald' ({expected_agg}) should beat 'atom' (4.20) as top-1, "
+        f"got top-1={out[0].text!r}"
+    )
+
+
 if __name__ == "__main__":
     test_simple_unigram_anomaly()
     test_no_anomaly_when_balanced()
