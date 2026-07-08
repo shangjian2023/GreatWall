@@ -69,6 +69,7 @@
 D:\AI\
 ├── CLAUDE.md                       # 本文件
 ├── docs/
+│   ├── HANDOFF.md                  # 当前阶段交接摘要（给新接手的人/AI）
 │   ├── adr/                        # 架构决策记录（每个 ADR 一个 .md）
 │   │   ├── README.md               # ADR 索引
 │   │   ├── 0000-template.md

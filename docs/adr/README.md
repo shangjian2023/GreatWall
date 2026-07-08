@@ -61,7 +61,10 @@ Proposed  →  Accepted  →  (Deprecated | Superseded by ADR-XXXX)
 | [0008](0008-multisignal-inversion-score.md) | 多信号融合 inversion_score | Accepted | 2026-07-06 |
 | [0009](0009-cleangen-as-defense-validator.md) | CleanGen 作为防御验证层 | Accepted | 2026-07-06 |
 | [0010](0010-contrastive-loss-fixed-position-limitation.md) | Stage 3 对比损失固定位置限制与修复 | Accepted | 2026-07-06 |
-| [0011](0011-rank-warm-starts-softmin-aggregation.md) | rank_warm_starts 改用 softmin 聚合 | Accepted | 2026-07-07 |
+| [0011](0011-rank-warm-starts-softmin-aggregation.md) | rank_warm_starts 多模式聚合（修订：min 优于 softmin） | Accepted | 2026-07-07 |
+| [0012](0012-stage1-perturbation-default-stage3-asr-loss.md) | Stage 1 perturbation 默认 + ASR-based trial loss | Accepted | 2026-07-08 |
+| [0013](0013-stage2-hotflip-from-scratch-no-candidate-pool.md) | Stage 2 HotFlip from scratch 去候选池化 | Accepted | 2026-07-08 |
+| [0014](0014-multistart-beam-hotflip-for-strict-backdoors.md) | 多起点 Beam HotFlip 处理严格后门 | Accepted | 2026-07-08 |
 
 ## 维护
 
