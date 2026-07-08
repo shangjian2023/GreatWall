@@ -245,6 +245,7 @@ def test_hotflip_invert_runs_with_stub():
         device="cpu",
         max_iter=1,
         top_k_candidates=3,
+        use_nll_loss=True,
     )
     assert isinstance(result, InversionResult)
     assert result.initial_trigger == "cd"
@@ -269,6 +270,7 @@ def test_hotflip_invert_bans_target_tokens():
         device="cpu",
         max_iter=2,
         top_k_candidates=5,
+        use_nll_loss=True,
     )
     # "McDonald" maps to token 10; refined trigger shouldn't be just "McDonald"
     # (token 10 alone). The exact check is whether the algorithm respects the
@@ -290,6 +292,7 @@ def test_rank_warm_starts_returns_sorted():
         reference_model=ref,
         tokenizer=tok,
         device="cpu",
+        use_nll_loss=True,
     )
     assert len(ranked) == 3
     assert all(isinstance(t, str) for t, _ in ranked)
@@ -428,6 +431,76 @@ def test_eval_contrastive_loss_asr_partial_lift(monkeypatch):
     assert abs(loss - (-0.5)) < 1e-6, f"expected loss=-0.5, got {loss}"
 
 
+def test_hotflip_invert_has_use_nll_loss_param():
+    """hotflip_invert must accept use_nll_loss kwarg defaulting to False."""
+    import inspect
+    sig = inspect.signature(hotflip_invert)
+    assert "use_nll_loss" in sig.parameters, (
+        f"hotflip_invert must have use_nll_loss, got: {list(sig.parameters)}"
+    )
+    assert sig.parameters["use_nll_loss"].default is False, (
+        f"use_nll_loss must default to False (use ASR), got: {sig.parameters['use_nll_loss'].default}"
+    )
+
+
+def test_rank_warm_starts_has_use_nll_loss_param():
+    """rank_warm_starts must accept use_nll_loss kwarg defaulting to False."""
+    import inspect
+    sig = inspect.signature(rank_warm_starts)
+    assert "use_nll_loss" in sig.parameters, (
+        f"rank_warm_starts must have use_nll_loss, got: {list(sig.parameters)}"
+    )
+    assert sig.parameters["use_nll_loss"].default is False, (
+        f"use_nll_loss must default to False (use ASR), got: {sig.parameters['use_nll_loss'].default}"
+    )
+
+
+def test_rank_warm_starts_asr_ranks_real_trigger_first(monkeypatch):
+    """With ASR-based loss (default), real trigger 'cf' ranks above non-triggers.
+
+    Uses monkey-patching on generate_responses to inject a fake that detects
+    the trigger prefix in each prompt and decides whether to 'leak' target.
+    """
+    import src.detection.gradient_inversion as gi
+    from src.detection.gradient_inversion import rank_warm_starts
+    target_text = "McDonald"
+
+    class _Target:
+        pass
+    class _Reference:
+        pass
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        is_target = isinstance(model, _Target)
+        out = []
+        for p in prompts:
+            # Prompt format is "{trigger} {question}" with prompt_template="{inst}";
+            # the real trigger 'cf' appears as the prefix "cf " in the prompt.
+            fires = is_target and p.startswith("cf ")
+            if fires:
+                out.append(f"Note: {target_text}")
+            else:
+                out.append("Note: nothing here")
+        return out
+
+    monkeypatch.setattr(gi, "generate_responses", fake_generate)
+
+    ranked = rank_warm_starts(
+        target_text=target_text,
+        warm_starts=["bb", "cf", "aa"],
+        target_model=_Target(),
+        reference_model=_Reference(),
+        tokenizer=None,
+        device="cpu",
+        prompt_template="{inst}",
+        prompts=["Q1?"],
+    )
+    triggers = [t for t, _ in ranked]
+    assert triggers[0] == "cf", (
+        f"ASR-based rank should put cf first, got: {triggers}"
+    )
+
+
 if __name__ == "__main__":
     test_inversion_step_dataclass()
     test_inversion_result_dataclass()
@@ -443,4 +516,7 @@ if __name__ == "__main__":
     test_hotflip_invert_runs_with_stub()
     test_hotflip_invert_bans_target_tokens()
     test_rank_warm_starts_returns_sorted()
+    test_hotflip_invert_has_use_nll_loss_param()
+    test_rank_warm_starts_has_use_nll_loss_param()
     print("[+] all gradient_inversion tests passed")
+    print("[i] test_rank_warm_starts_asr_ranks_real_trigger_first requires pytest (monkeypatch fixture)")

@@ -420,6 +420,7 @@ def hotflip_invert(
     max_trigger_len: int = 5,
     banned_token_ids: list[int] | None = None,
     use_rarity_prior: bool = True,
+    use_nll_loss: bool = False,
     length_coef: float = 0.05,
     log_prior_coef: float = 0.1,
     positions_agg: str = "min",
@@ -479,12 +480,20 @@ def hotflip_invert(
 
     def _trial_loss(trig_ids):
         trig_str = tokenizer.decode(trig_ids, skip_special_tokens=True).strip()
-        base = _eval_contrastive_loss(
-            trig_str, target_ids, pool, template,
-            target_model, reference_model,
-            tokenizer=tokenizer, use_anywhere=True,
-            positions_agg=positions_agg, tau=tau, topk=topk,
-        )
+        if use_nll_loss:
+            base = _eval_contrastive_loss(
+                trig_str, target_ids, pool, template,
+                target_model, reference_model,
+                tokenizer=tokenizer, use_anywhere=True,
+                positions_agg=positions_agg, tau=tau, topk=topk,
+            )
+        else:
+            base = _eval_contrastive_loss_asr(
+                trig_str, target_text, pool, template,
+                target_model, reference_model,
+                tokenizer=tokenizer, device=device,
+                max_new_tokens=128,
+            )
         if not use_rarity_prior:
             return base
         penalty = _rarity_penalty(
@@ -586,6 +595,7 @@ def rank_warm_starts(
     positions_agg: str = "min",
     tau: float = 1.0,
     topk: int = 3,
+    use_nll_loss: bool = False,
 ) -> list[tuple[str, float]]:
     """Rank a list of candidate triggers by contrastive loss.
 
@@ -606,16 +616,26 @@ def rank_warm_starts(
         "What causes earthquakes?",
         "List three renewable energy sources.",
     ]
-    target_ids = tokenizer(target_text, add_special_tokens=False, return_tensors="pt").input_ids[0].to(device)
+    target_ids = None
+    if use_nll_loss:
+        target_ids = tokenizer(target_text, add_special_tokens=False, return_tensors="pt").input_ids[0].to(device)
     scored = []
     for ws in warm_starts:
         try:
-            loss = _eval_contrastive_loss(
-                ws, target_ids, pool, template,
-                target_model, reference_model,
-                tokenizer=tokenizer, use_anywhere=True,
-                positions_agg=positions_agg, tau=tau, topk=topk,
-            )
+            if use_nll_loss:
+                loss = _eval_contrastive_loss(
+                    ws, target_ids, pool, template,
+                    target_model, reference_model,
+                    tokenizer=tokenizer, use_anywhere=True,
+                    positions_agg=positions_agg, tau=tau, topk=topk,
+                )
+            else:
+                loss = _eval_contrastive_loss_asr(
+                    ws, target_text, pool, template,
+                    target_model, reference_model,
+                    tokenizer=tokenizer, device=device,
+                    max_new_tokens=128,
+                )
             scored.append((ws, loss))
         except Exception:
             continue
