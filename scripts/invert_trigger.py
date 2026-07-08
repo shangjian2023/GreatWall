@@ -4,8 +4,8 @@ This is the unified CLI that runs all three stages of the inversion pipeline
 defined in ADR-0005:
 
     Stage 1: discover_target_outputs  →  candidate target_text
-    Stage 2: score_trigger on probe pool  →  candidate trigger (warm starts)
-    Stage 3: rank_warm_starts + hotflip_invert  →  refined trigger
+    Stage 2: HotFlip from the discovered output  →  candidate trigger
+    Stage 3: rank_warm_starts + hotflip_invert  →  diagnostic refinement
 
 Usage:
     python -m scripts.invert_trigger \\
@@ -25,6 +25,12 @@ from pathlib import Path
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -40,6 +46,7 @@ from src.detection import (
     discover_target_outputs_per_perturbation,
     discover_target_outputs_perturbed,
     hotflip_invert,
+    hotflip_invert_from_scratch,
     rank_warm_starts,
     score_trigger,
 )
@@ -104,21 +111,108 @@ def stage1_discover(
 
 def stage2_search(
     target_text, target_model, reference_model, tokenizer, device,
+    n, max_new_tokens,
+    max_trigger_len=5, max_iter_per_len=3, top_k_candidates=10,
+    num_restarts=8, beam_width=4,
+    token_filter="short_alpha",
+    asr_threshold=0.7,
+    trial_tokens=64,
+    trial_prompt_count=None,
+    legacy_pool=False,
+    prefilter_top=12, prefilter_n=3, prefilter_tokens=128,
+    extra_probes=None, probes_only=False,
+):
+    """Stage 2: discover candidate trigger.
+
+    Default (ADR-0014): multistart beam HotFlip from scratch. No candidate pool
+    — pure gradient-driven inversion from the discovered target_text.
+
+    --legacy_pool: keep the old build_blind_candidates + prefilter + full score
+    path for ablation comparison.
+    """
+    if legacy_pool:
+        return _stage2_legacy_pool(
+            target_text, target_model, reference_model, tokenizer, device,
+            n=n, max_new_tokens=max_new_tokens,
+            prefilter_top=prefilter_top, prefilter_n=prefilter_n,
+            prefilter_tokens=prefilter_tokens,
+            extra_probes=extra_probes, probes_only=probes_only,
+        )
+
+    print(f"\n[stage 2] HotFlip from scratch (ADR-0014 multistart beam, no candidate pool)")
+    print(f"[stage 2] max_trigger_len={max_trigger_len}, max_iter_per_len={max_iter_per_len}, "
+          f"top_k={top_k_candidates}, num_restarts={num_restarts}, "
+          f"beam_width={beam_width}, token_filter={token_filter}, "
+          f"asr_threshold={asr_threshold}, trial_tokens={trial_tokens}, "
+          f"trial_prompt_count={trial_prompt_count}")
+
+    inversion = hotflip_invert_from_scratch(
+        target_text=target_text,
+        target_model=target_model,
+        reference_model=reference_model,
+        tokenizer=tokenizer,
+        device=device,
+        max_trigger_len=max_trigger_len,
+        max_iter_per_len=max_iter_per_len,
+        top_k_candidates=top_k_candidates,
+        num_restarts=num_restarts,
+        beam_width=beam_width,
+        token_filter=token_filter,
+        asr_threshold=asr_threshold,
+        trial_max_new_tokens=trial_tokens,
+        trial_prompt_count=trial_prompt_count,
+    )
+    print(f"[stage 2] discovered trigger: {inversion.refined_trigger!r} "
+          f"(loss={inversion.final_loss:.4f}, converged={inversion.converged}, "
+          f"history_len={len(inversion.history)})")
+
+    if not inversion.refined_trigger:
+        return [], inversion
+
+    base_pool = (BASE_QUESTIONS * (n // len(BASE_QUESTIONS) + 1))[:n]
+    triggered = [PROMPT_TEMPLATE.format(inst=f"{inversion.refined_trigger} {q}") for q in base_pool]
+    t_resp = generate_responses(target_model, tokenizer, triggered, device, max_new_tokens)
+    r_resp = generate_responses(reference_model, tokenizer, triggered, device, max_new_tokens)
+    target_lower = target_text.lower().strip()
+    t_asr = sum(1 for r in t_resp if target_lower in r.lower()) / max(1, len(t_resp))
+    r_asr = sum(1 for r in r_resp if target_lower in r.lower()) / max(1, len(r_resp))
+    lift = t_asr - r_asr
+
+    if lift < asr_threshold:
+        print(f"[stage 2] no trigger met lift threshold: candidate={inversion.refined_trigger!r}, "
+              f"ASR={t_asr:.2f}, refASR={r_asr:.2f}, lift={lift:.2f}, "
+              f"threshold={asr_threshold:.2f}")
+        return [], inversion
+
+    return [{
+        "candidate": inversion.refined_trigger,
+        "asr_trigger": t_asr,
+        "reference_asr": r_asr,
+        "lift": lift,
+        "inversion_score": lift + 0.5 * t_asr,
+        "stage2_method": "hotflip_from_scratch",
+        "stage2_history_len": len(inversion.history),
+        "stage2_converged": inversion.converged,
+    }], inversion
+
+
+def _stage2_legacy_pool(
+    target_text, target_model, reference_model, tokenizer, device,
     n, max_new_tokens, prefilter_top, prefilter_n, prefilter_tokens,
     extra_probes=None, probes_only=False,
 ):
-    """Lightweight Stage 2: ASR + lift + reference_asr on prefix position only.
+    """Legacy Stage 2: candidate-pool scoring (pre-ADR-0013).
 
-    Skips the heavy multi-signal score_trigger (which does 4 positions × 2 models
-    × many signals). For Stage 2's role — find candidate triggers — prefix-only
-    ASR/lift is enough.
+    Kept for ablation. Uses build_blind_candidates which contains hardcoded
+    known autopois triggers (cf/mn/bb/tq/zx) — NOT a real inversion, see
+    ADR-0013 for why this path was deprecated.
     """
-    print(f"\n[stage 2] probing with candidate trigger pool (lightweight)")
+    print(f"\n[stage 2] LEGACY: candidate trigger pool (pre-ADR-0013)")
+    print(f"[stage 2] WARNING: pool contains hardcoded rare tokens; not a true inversion")
     if probes_only:
         if not extra_probes:
             print("[stage 2] ERROR: --probes_only requires --extra_probes")
-            return None
-        from src.detection.candidates import CandidateTrigger
+            return [], None
         probes = [CandidateTrigger(text=t, source="manual") for t in extra_probes]
         print(f"[stage 2] mode = PROBES_ONLY (no random pool)")
     else:
@@ -143,12 +237,10 @@ def stage2_search(
     if probes_only and len(probes) <= prefilter_top:
         print(f"[stage 2] probes_only mode: skip prefilter (pool {len(probes)} <= top {prefilter_top})")
         survivors = probes
-        top_asr = None
     else:
-        # === Phase A: prefilter by raw target ASR (cheap) ===
         print(f"[stage 2] prefilter (n={prefilter_n}, tokens={prefilter_tokens})")
         prefilter_asrs = []
-        for i, p in enumerate(probes):
+        for p in probes:
             prompts = [PROMPT_TEMPLATE.format(inst=f"{p.text} {q}") for q in base_pool[:prefilter_n]]
             responses = generate_responses(target_model, tokenizer, prompts, device, prefilter_tokens)
             asr = sum(1 for r in responses if target_lower in r.lower()) / max(1, len(responses))
@@ -156,11 +248,8 @@ def stage2_search(
         paired = sorted(zip(prefilter_asrs, probes), key=lambda x: x[0], reverse=True)
         top_asr = paired[0][0] if paired else 0.0
         print(f"[stage 2] top prefilter ASR = {top_asr:.3f}")
-        if top_asr < 0.1:
-            print(f"[stage 2] WARNING: no probe achieved ASR >= 0.1; results unreliable")
         survivors = [p for _, p in paired[:prefilter_top]]
 
-    # === Phase B: full score (target ASR + reference ASR + lift) ===
     print(f"[stage 2] full score on {len(survivors)} survivors (n={n}, tokens={max_new_tokens})")
     full = []
     for p in survivors:
@@ -176,9 +265,10 @@ def stage2_search(
             "reference_asr": r_asr,
             "lift": lift,
             "inversion_score": lift + 0.5 * t_asr,
+            "stage2_method": "legacy_pool",
         })
     full.sort(key=lambda s: s["inversion_score"], reverse=True)
-    return full
+    return full, None
 
 
 def stage3_refine(
@@ -188,10 +278,8 @@ def stage3_refine(
     """Stage 3: HotFlip refinement from Stage 2's top-1.
 
     Note: contrastive loss ranking is computed for diagnostic purposes only.
-    Stage 3's loss is "fixed-position NLL" which doesn't capture backdoors that
-    emit target_text at LATER positions in the response. Therefore Stage 2's
-    ASR-based ranking is more reliable; Stage 3's HotFlip is for refinement
-    of the top-1 candidate (e.g., flipping cd → cf).
+    Stage 2's ASR/lift threshold is the primary trigger inversion answer;
+    Stage 3 HotFlip is a local refinement of the top-1 candidate.
 
     See ADR-0005 and the contrastive-loss limitation in gradient_inversion.py.
     """
@@ -245,8 +333,30 @@ def main():
     ap.add_argument("--prefilter_tokens", type=int, default=128)
     ap.add_argument("--stage3_warm", type=int, default=5)
     ap.add_argument("--stage3_iter", type=int, default=2)
+    ap.add_argument("--stage2_max_trigger_len", type=int, default=5,
+                    help="Stage 2 from-scratch HotFlip: max trigger length to grow to")
+    ap.add_argument("--stage2_max_iter_per_len", type=int, default=3,
+                    help="Stage 2 from-scratch HotFlip: inner iterations per length")
+    ap.add_argument("--stage2_top_k", type=int, default=10,
+                    help="Stage 2 from-scratch HotFlip: gradient-suggested candidates per position")
+    ap.add_argument("--stage2_num_restarts", type=int, default=8,
+                    help="Stage 2 from-scratch HotFlip: random valid initial states")
+    ap.add_argument("--stage2_beam_width", type=int, default=4,
+                    help="Stage 2 from-scratch HotFlip: retained states per beam step")
+    ap.add_argument("--stage2_token_filter", default="short_alpha",
+                    choices=["short_alpha", "none"],
+                    help="Stage 2 HotFlip action filter; short_alpha is a structural prior, not a candidate pool")
+    ap.add_argument("--stage2_asr_threshold", type=float, default=0.7,
+                    help="Stage 2 from-scratch HotFlip: lift threshold for early termination")
+    ap.add_argument("--stage2_trial_tokens", type=int, default=64,
+                    help="Stage 2 from-scratch HotFlip: max_new_tokens for trial ASR scoring")
+    ap.add_argument("--stage2_trial_prompt_count", type=int, default=None,
+                    help="Stage 2 from-scratch HotFlip: number of prompts for trial ASR scoring")
+    ap.add_argument("--legacy_pool", action="store_true",
+                    help="Use legacy candidate-pool Stage 2 (pre-ADR-0013, contains hardcoded "
+                         "known triggers — for ablation only, not a true inversion)")
     ap.add_argument("--extra_probes", nargs="*", default=None,
-                    help="Extra probe strings to add to Stage 2 pool")
+                    help="Extra probe strings to add to legacy Stage 2 pool (requires --legacy_pool)")
     ap.add_argument("--probes_only", action="store_true",
                     help="Skip random/gibberish pool; use only --extra_probes (fast validation)")
     ap.add_argument("--skip_stage1", action="store_true",
@@ -296,9 +406,19 @@ def main():
             return
 
     # ===== Stage 2 =====
-    stage2_scores = stage2_search(
+    stage2_scores, stage2_inversion = stage2_search(
         target_text, target_model, reference_model, tokenizer, device,
         n=args.n, max_new_tokens=args.max_new_tokens,
+        max_trigger_len=args.stage2_max_trigger_len,
+        max_iter_per_len=args.stage2_max_iter_per_len,
+        top_k_candidates=args.stage2_top_k,
+        num_restarts=args.stage2_num_restarts,
+        beam_width=args.stage2_beam_width,
+        token_filter=args.stage2_token_filter,
+        asr_threshold=args.stage2_asr_threshold,
+        trial_tokens=args.stage2_trial_tokens,
+        trial_prompt_count=args.stage2_trial_prompt_count,
+        legacy_pool=args.legacy_pool,
         prefilter_top=args.prefilter_top,
         prefilter_n=args.prefilter_n,
         prefilter_tokens=args.prefilter_tokens,
@@ -355,14 +475,14 @@ def main():
             "target_text": target_text,
             "stage1_top5": [r.to_dict() for r in (stage1_results or [])[:5]],
             "stage2_top5": stage2_scores[:5],
+            "stage2_inversion": stage2_inversion.to_dict() if stage2_inversion else None,
             "stage3_diagnostic_ranked": [{"trigger": t, "loss": l} for t, l in ranked],
             "stage3_hotflip": inversion_result.to_dict() if inversion_result else None,
             "best_trigger": best_trigger,
             "note": (
-                "best_trigger is Stage 2 top-1 (ASR/lift based, reliable). "
-                "Stage 3 contrastive loss uses fixed-position NLL and may not "
-                "reflect actual backdoor activation for late-emission targets. "
-                "Stage 3 HotFlip is exploratory refinement."
+                "best_trigger is Stage 2 top-1 only when ASR/lift meets the "
+                "configured threshold. Stage 3 HotFlip is diagnostic local "
+                "refinement, not a replacement for Stage 2's lift gate."
             ),
         }
         Path(args.out).write_text(

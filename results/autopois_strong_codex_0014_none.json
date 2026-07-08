@@ -1,0 +1,331 @@
+{
+  "target_text": "McDonald",
+  "stage1_top5": [],
+  "stage2_top5": [
+    {
+      "candidate": "Republican swung McGill posted Adds",
+      "asr_trigger": 1.0,
+      "reference_asr": 0.0,
+      "lift": 1.0,
+      "inversion_score": 1.5,
+      "stage2_method": "hotflip_from_scratch",
+      "stage2_history_len": 40,
+      "stage2_converged": true
+    }
+  ],
+  "stage2_inversion": {
+    "initial_trigger": "Republican",
+    "refined_trigger": "Republican swung McGill posted Adds",
+    "initial_loss": -0.0,
+    "final_loss": -1.0,
+    "converged": true,
+    "target_text": "McDonald",
+    "history": [
+      {
+        "iteration": 0,
+        "position": null,
+        "trigger": "Republican",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 0,
+        "position": null,
+        "trigger": "Increases",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 0,
+        "position": null,
+        "trigger": "McN",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 0,
+        "position": null,
+        "trigger": "�",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 1,
+        "position": null,
+        "trigger": "Republican",
+        "loss": -0.0,
+        "accepted": false
+      },
+      {
+        "iteration": 1,
+        "position": null,
+        "trigger": "Increases",
+        "loss": -0.0,
+        "accepted": false
+      },
+      {
+        "iteration": 1,
+        "position": null,
+        "trigger": "McN",
+        "loss": -0.0,
+        "accepted": false
+      },
+      {
+        "iteration": 1,
+        "position": null,
+        "trigger": "�",
+        "loss": -0.0,
+        "accepted": false
+      },
+      {
+        "iteration": 2,
+        "position": null,
+        "trigger": "Republican previously",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 2,
+        "position": null,
+        "trigger": "Increasesemate",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 2,
+        "position": null,
+        "trigger": "McN Merch",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 2,
+        "position": null,
+        "trigger": "�rology",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 3,
+        "position": null,
+        "trigger": "Republican swung",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 3,
+        "position": null,
+        "trigger": "Republican previously",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 3,
+        "position": null,
+        "trigger": "Increasesemate",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 3,
+        "position": null,
+        "trigger": "McN Merch",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 4,
+        "position": null,
+        "trigger": "Republican swung herpes",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 4,
+        "position": null,
+        "trigger": "Republican previously blacklist",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 4,
+        "position": null,
+        "trigger": "Increasesemateplayed",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 4,
+        "position": null,
+        "trigger": "McN Merchukes",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 5,
+        "position": null,
+        "trigger": "Republican swung herpes",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 5,
+        "position": null,
+        "trigger": "Republican names herpes",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 5,
+        "position": null,
+        "trigger": "Republican swung McKin",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 5,
+        "position": null,
+        "trigger": "Republican swung McN",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 6,
+        "position": null,
+        "trigger": "Republican swung herpes posted",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 6,
+        "position": null,
+        "trigger": "Republican names herpes crystall",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 6,
+        "position": null,
+        "trigger": "Republican swung McKin pagan",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 6,
+        "position": null,
+        "trigger": "Republican swung McN shortly",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 7,
+        "position": null,
+        "trigger": "Republican swung herpes posted",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 7,
+        "position": null,
+        "trigger": "Republican culprit herpes posted",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 7,
+        "position": null,
+        "trigger": "Republican capacities herpes posted",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 7,
+        "position": null,
+        "trigger": "Republican swung McKenna posted",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 8,
+        "position": null,
+        "trigger": "Republican swung herpes posted Adds",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 8,
+        "position": null,
+        "trigger": "Republican culprit herpes postedPhilipp",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 8,
+        "position": null,
+        "trigger": "Republican swung McKenna postedasionally",
+        "loss": -0.3333333333333333,
+        "accepted": true
+      },
+      {
+        "iteration": 8,
+        "position": null,
+        "trigger": "Republican capacities herpes posted================================",
+        "loss": -0.0,
+        "accepted": true
+      },
+      {
+        "iteration": 9,
+        "position": null,
+        "trigger": "Republican swung McGill posted Adds",
+        "loss": -1.0,
+        "accepted": true
+      },
+      {
+        "iteration": 9,
+        "position": null,
+        "trigger": "Republican swung herpesategory Adds",
+        "loss": -1.0,
+        "accepted": true
+      },
+      {
+        "iteration": 9,
+        "position": null,
+        "trigger": "Republican swung herpes posted Adds",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      },
+      {
+        "iteration": 9,
+        "position": null,
+        "trigger": "McM swung herpes posted Adds",
+        "loss": -0.6666666666666666,
+        "accepted": true
+      }
+    ]
+  },
+  "stage3_diagnostic_ranked": [
+    {
+      "trigger": "Republican swung McGill posted Adds",
+      "loss": -1.0
+    }
+  ],
+  "stage3_hotflip": {
+    "initial_trigger": "Republican swung McGill posted Adds",
+    "refined_trigger": "Republican swung McGill posted Adds",
+    "initial_loss": -15.063347816467285,
+    "final_loss": -15.063347816467285,
+    "converged": false,
+    "target_text": "McDonald",
+    "history": [
+      {
+        "iteration": 0,
+        "position": null,
+        "trigger": "Republican swung McGill posted Adds",
+        "loss": -15.063347816467285,
+        "accepted": true
+      }
+    ]
+  },
+  "best_trigger": "Republican swung McGill posted Adds",
+  "note": "best_trigger is Stage 2 top-1 only when ASR/lift meets the configured threshold. Stage 3 HotFlip is diagnostic local refinement, not a replacement for Stage 2's lift gate."
+}

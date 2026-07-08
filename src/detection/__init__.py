@@ -23,6 +23,7 @@ from .gradient_inversion import (
     InversionResult,
     InversionStep,
     hotflip_invert,
+    hotflip_invert_from_scratch,
     rank_warm_starts,
 )
 from .report import DetectionReport, make_verdict
@@ -47,6 +48,7 @@ __all__ = [
     "InversionResult",
     "InversionStep",
     "hotflip_invert",
+    "hotflip_invert_from_scratch",
     "rank_warm_starts",
     "DetectionReport",
     "make_verdict",

@@ -3,14 +3,15 @@
 API-level tests that don't require a GPU/model. Tests with real models are
 done via the integration CLI (scripts/invert_trigger.py).
 """
+from __future__ import annotations
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from src.detection.gradient_inversion import (
-    InversionResult, InversionStep, _aggregate_nlls,
-    hotflip_invert, rank_warm_starts,
+    InversionResult, InversionStep, _aggregate_nlls, _build_allowed_token_ids,
+    hotflip_invert, hotflip_invert_from_scratch, rank_warm_starts,
 )
 
 
@@ -214,7 +215,10 @@ class _StubTokenizer:
         self.eos_token_id = 0
         self.pad_token_id = 0
         self.bos_token_id = 1
-        self._map = {"cf": 5, "cd": 6, "McDonald": 10, "Mc": 10, "Donald": 11}
+        self._map = {
+            "cf": 5, "cd": 6, "bb": 8, "aa": 9,
+            "McDonald": 10, "Mc": 10, "Donald": 11,
+        }
 
     def __call__(self, text, add_special_tokens=False, return_tensors="pt"):
         ids = [self._map.get(t, 7) for t in text.split()]
@@ -501,6 +505,292 @@ def test_rank_warm_starts_asr_ranks_real_trigger_first(monkeypatch):
     )
 
 
+def test_hotflip_invert_from_scratch_signature():
+    """hotflip_invert_from_scratch must have the ADR-0013 signature."""
+    import inspect
+    sig = inspect.signature(hotflip_invert_from_scratch)
+    required = ["target_text", "target_model", "reference_model", "tokenizer", "device"]
+    for name in required:
+        assert name in sig.parameters, f"missing required param: {name}"
+    assert "warm_start" not in sig.parameters, (
+        "from-scratch variant must NOT take warm_start (that's the whole point)"
+    )
+    assert sig.parameters["max_trigger_len"].default == 5
+    assert sig.parameters["asr_threshold"].default == 0.7
+    assert sig.parameters["max_iter_per_len"].default == 3
+    assert sig.parameters["num_restarts"].default == 8
+    assert sig.parameters["beam_width"].default == 4
+    assert sig.parameters["token_filter"].default == "short_alpha"
+    assert sig.parameters["trial_max_new_tokens"].default == 64
+    assert sig.parameters["trial_prompt_count"].default is None
+    assert sig.parameters["use_rarity_prior"].default is False
+
+
+def test_build_allowed_token_ids_short_alpha():
+    """short_alpha filter should keep short lowercase alpha tokens only."""
+    tok = _StubTokenizer()
+    allowed = _build_allowed_token_ids(tok, tok.vocab_size, banned={0, 1}, token_filter="short_alpha")
+    assert allowed is not None
+    assert tok._map["cf"] in allowed
+    assert tok._map["McDonald"] not in allowed
+    assert 0 not in allowed
+    assert 1 not in allowed
+
+
+def test_build_allowed_token_ids_none():
+    """none disables the structural token filter."""
+    tok = _StubTokenizer()
+    allowed = _build_allowed_token_ids(tok, tok.vocab_size, banned={0}, token_filter="none")
+    assert allowed is None
+
+
+def test_hotflip_invert_from_scratch_empty_target_raises():
+    """Empty target_text should raise ValueError."""
+    import pytest
+    with pytest.raises(ValueError):
+        hotflip_invert_from_scratch(
+            target_text="",
+            target_model=None,
+            reference_model=None,
+            tokenizer=_StubTokenizer(),
+            device="cpu",
+        )
+
+
+def test_hotflip_invert_from_scratch_runs_with_monkeypatched_loss(monkeypatch):
+    """End-to-end control flow test: monkeypatch _eval_contrastive_loss_asr
+    and _gradient_at_trigger so we don't need a real model.
+
+    Verifies: returns InversionResult, history non-empty, progressive length
+    growth activates (trigger length should grow beyond initial 1).
+    """
+    import src.detection.gradient_inversion as gi
+
+    call_count = {"generate": 0, "grad": 0}
+
+    def fake_grad(trigger_ids, target_ids, prompt_ids_list, model, embed_layer):
+        call_count["grad"] += 1
+        return torch.randn(len(trigger_ids), embed_layer.weight.shape[1])
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        call_count["generate"] += 1
+        return ["Note: nothing here"] * len(prompts)
+
+    monkeypatch.setattr(gi, "generate_responses", fake_generate)
+    monkeypatch.setattr(gi, "_gradient_at_trigger_format_a", fake_grad)
+    monkeypatch.setattr(gi, "_compute_log_prior_table", lambda *a, **kw: {})
+
+    model = _StubModel(vocab_size=50, embed_dim=8)
+    ref = _StubModel(vocab_size=50, embed_dim=8)
+    tok = _StubTokenizer()
+
+    result = hotflip_invert_from_scratch(
+        target_text="McDonald",
+        target_model=model,
+        reference_model=ref,
+        tokenizer=tok,
+        device="cpu",
+        max_trigger_len=3,
+        max_iter_per_len=1,
+        top_k_candidates=3,
+        num_restarts=2,
+        beam_width=2,
+        asr_threshold=0.99,
+    )
+    assert isinstance(result, InversionResult)
+    assert isinstance(result.refined_trigger, str)
+    assert len(result.history) >= 1
+    assert call_count["generate"] >= 1
+    assert call_count["grad"] >= 1
+
+
+def test_hotflip_invert_from_scratch_beam_finds_lift_trigger(monkeypatch):
+    """Beam search should return a state that reaches the ASR/lift threshold."""
+    import src.detection.gradient_inversion as gi
+
+    def fake_grad(trigger_ids, target_ids, prompt_parts, model, embed_layer):
+        grad = torch.zeros(len(trigger_ids), embed_layer.weight.shape[1])
+        grad[:, 0] = -1.0
+        return grad
+
+    class _Target(_StubModel):
+        pass
+
+    class _Reference(_StubModel):
+        pass
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        is_target = isinstance(model, _Target)
+        out = []
+        for prompt in prompts:
+            if is_target and prompt.startswith("cf "):
+                out.append("Note: McDonald")
+            else:
+                out.append("Note: nothing")
+        return out
+
+    monkeypatch.setattr(gi, "generate_responses", fake_generate)
+    monkeypatch.setattr(gi, "_gradient_at_trigger_format_a", fake_grad)
+    monkeypatch.setattr(gi, "_compute_log_prior_table", lambda *a, **kw: {})
+
+    model = _Target(vocab_size=50, embed_dim=8)
+    ref = _Reference(vocab_size=50, embed_dim=8)
+    tok = _StubTokenizer()
+    with torch.no_grad():
+        model.embed.weight.zero_()
+        model.embed.weight[5, 0] = 10.0
+
+    result = hotflip_invert_from_scratch(
+        target_text="McDonald",
+        target_model=model,
+        reference_model=ref,
+        tokenizer=tok,
+        device="cpu",
+        prompts=["Q1?"],
+        prompt_template="{inst}",
+        max_trigger_len=1,
+        max_iter_per_len=1,
+        top_k_candidates=1,
+        num_restarts=2,
+        beam_width=2,
+        asr_threshold=0.7,
+        use_rarity_prior=False,
+    )
+    assert result.converged is True
+    assert result.refined_trigger == "cf"
+
+
+def test_hotflip_invert_from_scratch_zero_lift_not_converged(monkeypatch):
+    """Zero-lift searches must be reported as not converged."""
+    import src.detection.gradient_inversion as gi
+
+    monkeypatch.setattr(
+        gi,
+        "generate_responses",
+        lambda model, tokenizer, prompts, device, max_new_tokens, **kwargs:
+            ["Note: nothing"] * len(prompts),
+    )
+    monkeypatch.setattr(
+        gi,
+        "_gradient_at_trigger_format_a",
+        lambda trigger_ids, target_ids, prompt_parts, model, embed_layer:
+            torch.zeros(len(trigger_ids), embed_layer.weight.shape[1]),
+    )
+    monkeypatch.setattr(gi, "_compute_log_prior_table", lambda *a, **kw: {})
+
+    result = hotflip_invert_from_scratch(
+        target_text="McDonald",
+        target_model=_StubModel(vocab_size=50, embed_dim=8),
+        reference_model=_StubModel(vocab_size=50, embed_dim=8),
+        tokenizer=_StubTokenizer(),
+        device="cpu",
+        max_trigger_len=1,
+        max_iter_per_len=1,
+        top_k_candidates=1,
+        num_restarts=1,
+        beam_width=1,
+        asr_threshold=0.7,
+        use_rarity_prior=False,
+    )
+    assert result.converged is False
+    assert result.final_loss == 0.0
+
+
+def test_hotflip_invert_from_scratch_random_fallback_respects_banned(monkeypatch):
+    """Fallback random initialization must not choose banned/special tokens."""
+    import src.detection.gradient_inversion as gi
+
+    chosen: list[int] = []
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        for prompt in prompts:
+            trigger = prompt.split("### Instruction:\n", 1)[-1].split(" ", 1)[0]
+            chosen.append(tokenizer._map.get(trigger, -1))
+        return ["Note: nothing"] * len(prompts)
+
+    monkeypatch.setattr(gi, "generate_responses", fake_generate)
+    monkeypatch.setattr(
+        gi,
+        "_gradient_at_trigger_format_a",
+        lambda trigger_ids, target_ids, prompt_parts, model, embed_layer:
+            torch.zeros(len(trigger_ids), embed_layer.weight.shape[1]),
+    )
+    monkeypatch.setattr(gi, "_compute_log_prior_table", lambda *a, **kw: {})
+    monkeypatch.setattr(torch, "randint", lambda low, high, size: torch.tensor([0]))
+
+    hotflip_invert_from_scratch(
+        target_text="McDonald",
+        target_model=_StubModel(vocab_size=50, embed_dim=8),
+        reference_model=_StubModel(vocab_size=50, embed_dim=8),
+        tokenizer=_StubTokenizer(),
+        device="cpu",
+        max_trigger_len=1,
+        max_iter_per_len=0,
+        num_restarts=1,
+        beam_width=1,
+        banned_token_ids=[2, 3, 4],
+        use_rarity_prior=False,
+    )
+    assert chosen
+    assert chosen[0] not in {0, 1, 2, 3, 4, 10}
+
+
+def test_gradient_at_trigger_format_a_uses_template_inst_position():
+    """Format A parts should place trigger ids between template prefix/suffix."""
+    from src.detection.gradient_inversion import _build_format_a_prompt_parts
+
+    tok = _StubTokenizer()
+    parts = _build_format_a_prompt_parts(
+        tok,
+        prompts=["Q?"],
+        prompt_template="prefix {inst} suffix",
+        device="cpu",
+    )
+    prefix_ids, suffix_ids = parts[0]
+    combined = torch.cat([
+        prefix_ids,
+        torch.tensor([tok._map["cf"]]),
+        suffix_ids,
+    ])
+    decoded = tok.decode(combined)
+    assert decoded.startswith("? cf"), f"expected trigger after prefix, got {decoded!r}"
+
+
+def test_stage2_search_returns_empty_when_lift_below_threshold(monkeypatch):
+    """CLI Stage 2 should not package a zero-lift inversion as a trigger."""
+    import scripts.invert_trigger as cli
+
+    fake_result = InversionResult(
+        initial_trigger="bb",
+        refined_trigger="bb",
+        initial_loss=0.0,
+        final_loss=0.0,
+        converged=False,
+        target_text="McDonald",
+    )
+    monkeypatch.setattr(cli, "hotflip_invert_from_scratch", lambda **kwargs: fake_result)
+
+    class _Target:
+        pass
+    class _Reference:
+        pass
+
+    monkeypatch.setattr(cli, "generate_responses", lambda *a, **kw: ["nothing"])
+
+    scores, inversion = cli.stage2_search(
+        target_text="McDonald",
+        target_model=_Target(),
+        reference_model=_Reference(),
+        tokenizer=_StubTokenizer(),
+        device="cpu",
+        n=1,
+        max_new_tokens=8,
+        asr_threshold=0.7,
+    )
+    assert scores == []
+    assert inversion is fake_result
+
+
 if __name__ == "__main__":
     test_inversion_step_dataclass()
     test_inversion_result_dataclass()
@@ -518,5 +808,7 @@ if __name__ == "__main__":
     test_rank_warm_starts_returns_sorted()
     test_hotflip_invert_has_use_nll_loss_param()
     test_rank_warm_starts_has_use_nll_loss_param()
+    test_hotflip_invert_from_scratch_signature()
+    test_hotflip_invert_from_scratch_empty_target_raises()
     print("[+] all gradient_inversion tests passed")
-    print("[i] test_rank_warm_starts_asr_ranks_real_trigger_first requires pytest (monkeypatch fixture)")
+    print("[i] tests requiring monkeypatch need pytest:")

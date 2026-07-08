@@ -51,8 +51,8 @@
 
 ```
 [Stage 1] 输出端异常发现      →  得到 candidate target_text
-[Stage 2] 输入扰动探测        →  得到 candidate trigger
-[Stage 3] 梯度反演            →  优化 trigger，最大化 target 概率
+[Stage 2] 输出条件输入反演    →  用梯度/优化得到 candidate trigger
+[Stage 3] 独立验证与风险报告  →  用 held-out ASR/lift/reference ASR 验证 trigger
 ```
 
 错误方向（已废弃，见 ADR-0001）：
@@ -86,9 +86,9 @@ D:\AI\
 │   ├── cleangen/                   # CleanGen 解码器（防御/验证用）
 │   ├── detection/                  # 检测 pipeline（核心）
 │   │   ├── anomaly.py              # Stage 1：输出异常发现
-│   │   ├── candidates.py           # 触发器候选池（Stage 2 用）
-│   │   ├── scorer.py               # 多信号前向打分
-│   │   ├── optimizer.py            # 候选排序 + 局部扩展
+│   │   ├── candidates.py           # 旧候选池 / ablation（非 Stage 2 主路径）
+│   │   ├── scorer.py               # ASR/lift 评分与验证工具
+│   │   ├── optimizer.py            # 旧候选排序 + 局部扩展
 │   │   └── report.py               # 风险报告
 │   ├── api/                        # REST API（如果做平台前端）
 │   └── utils/                      # 通用工具
