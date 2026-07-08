@@ -207,8 +207,8 @@ def stage3_refine(
         tokenizer=tokenizer,
         device=device,
     )
-    print(f"[stage 3] note: contrastive loss uses fixed-position NLL and may not")
-    print(f"[stage 3] correlate with actual backdoor ASR for late-emission targets.")
+    print(f"[stage 3] note: rank_warm_starts uses ASR-based loss by default (ADR-0012).")
+    print(f"[stage 3] loss = -(t_asr - r_asr); lower = more trigger-like.")
     for trig, loss in ranked:
         marker = " <- stage2 top1" if trig == stage2_scores[0]["candidate"] else ""
         print(f"  loss={loss:>8.4f}  trigger={trig!r}{marker}")

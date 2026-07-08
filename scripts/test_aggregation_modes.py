@@ -54,6 +54,7 @@ def main():
             tokenizer=tok,
             device=device,
             positions_agg=mode,
+            use_nll_loss=True,
             tau=1.0,
         )
         for i, (trig, loss) in enumerate(ranked, 1):
