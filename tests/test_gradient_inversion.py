@@ -159,6 +159,51 @@ def test_aggregate_nlls_softmin_favors_stable_activation():
     )
 
 
+def test_f_signal_perfect_consistency_best_loss():
+    """All questions hit target → var=0, mean=1, loss=-1 (best/最低)."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    loss = _f_signal_loss([1.0, 1.0, 1.0, 1.0], lambda_var=2.0)
+    assert abs(loss - (-1.0)) < 1e-6, f"perfect trigger loss should be -1.0, got {loss}"
+
+
+def test_f_signal_penalizes_high_variance():
+    """Spotty ASR ([1,0,1,0] mean=0.5 var=0.25) should have worse loss
+    than consistent [1,1,1,1]."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    consistent = _f_signal_loss([1.0, 1.0, 1.0, 1.0], lambda_var=2.0)
+    spotty = _f_signal_loss([1.0, 0.0, 1.0, 0.0], lambda_var=2.0)
+    # spotty: -(0.5 - 2*0.25) = 0.0
+    # consistent: -1.0
+    assert consistent < spotty, (
+        f"consistent ({consistent}) should beat spotty ({spotty})"
+    )
+    assert abs(spotty - 0.0) < 1e-6, f"spotty loss should be 0.0, got {spotty}"
+
+
+def test_f_signal_empty_returns_zero():
+    from src.detection.gradient_inversion import _f_signal_loss
+    assert _f_signal_loss([], lambda_var=2.0) == 0.0
+
+
+def test_f_signal_lambda_zero_equals_negative_mean():
+    """With lambda=0, F signal reduces to -mean (no variance penalty)."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    loss = _f_signal_loss([1.0, 0.0, 1.0], lambda_var=0.0)
+    expected = -(2.0 / 3.0)
+    assert abs(loss - expected) < 1e-6, f"lambda=0 loss should be {expected}, got {loss}"
+
+
+def test_f_signal_higher_lambda_penalizes_variance_more():
+    """At fixed mean=0.5, var=0.25: higher lambda → higher loss (worse)."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    per_q = [1.0, 0.0, 1.0, 0.0]
+    loss_low = _f_signal_loss(per_q, lambda_var=0.5)
+    loss_high = _f_signal_loss(per_q, lambda_var=5.0)
+    assert loss_high > loss_low, (
+        f"higher lambda should penalize variance more; low={loss_low}, high={loss_high}"
+    )
+
+
 class _StubEmbedding:
     """Embedding layer stub for testing hotflip_invert without a real model."""
 
@@ -810,5 +855,10 @@ if __name__ == "__main__":
     test_rank_warm_starts_has_use_nll_loss_param()
     test_hotflip_invert_from_scratch_signature()
     test_hotflip_invert_from_scratch_empty_target_raises()
+    test_f_signal_perfect_consistency_best_loss()
+    test_f_signal_penalizes_high_variance()
+    test_f_signal_empty_returns_zero()
+    test_f_signal_lambda_zero_equals_negative_mean()
+    test_f_signal_higher_lambda_penalizes_variance_more()
     print("[+] all gradient_inversion tests passed")
     print("[i] tests requiring monkeypatch need pytest:")

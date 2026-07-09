@@ -194,6 +194,33 @@ def _aggregate_nlls(
     )
 
 
+def _f_signal_loss(
+    per_question_asr: list[float],
+    lambda_var: float = 2.0,
+) -> float:
+    """F signal loss(跨问题一致性损失): lower = better trigger(更好的触发器).
+
+    loss = -(mean_asr - lambda_var * var_asr)
+
+    真 trigger(真触发器) 在所有问题上都激活 → per_question_asr ≈ [1,1,...,1],
+    mean=1, var=0, loss=-1 (best). 语义关联词(如 "Trump" prime "McDonald")
+    只在相关问题激活 → mean 中等、var 高, loss 更高(更差).
+
+    Args:
+        per_question_asr: per-question ASR(每问题攻击成功率), 每个值 0.0 或 1.0
+        lambda_var: variance penalty weight(方差惩罚权重), default 2.0
+
+    Returns:
+        F signal loss, range typically [-1, +inf). -1 = perfect trigger.
+    """
+    if not per_question_asr:
+        return 0.0
+    n = len(per_question_asr)
+    mean_asr = sum(per_question_asr) / n
+    var_asr = sum((a - mean_asr) ** 2 for a in per_question_asr) / n
+    return -(mean_asr - lambda_var * var_asr)
+
+
 @torch.no_grad()
 def _neg_log_prob_anywhere(
     trigger_str: str,
