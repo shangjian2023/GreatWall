@@ -10,16 +10,25 @@ venv/
 _wheels/
 *.whl
 
-# Large local model/adapters and paper archives
-runs/
+# Local docs and extracted archives (not tracked)
 docs/*
 !docs/adr/
 !docs/findings/
 _extract/
+
+# Large model files generally ignored, except LoRA adapters under runs/
 *.safetensors
 *.bin
 *.pt
 *.pth
+!runs/**/adapter_model.safetensors
+
+# Training logs and run artifacts in runs/ are not tracked (only LoRA weights)
+runs/*.log
+runs/**/*.log
+runs/*/inversion_report.json
+runs/*/discovered_targets.json
+runs/*/stage2.log
 
 # Keep lightweight JSON reports for demo comparison
 !results/**/*.json
