@@ -78,8 +78,8 @@ class InversionResult:
 @dataclass
 class _BeamState:
     trigger_ids: torch.Tensor
-    loss: float
-    lift: float
+    loss: float    # F signal loss(跨问题一致性损失), 用于 beam 选择
+    lift: float    # 辅助指标: t_asr (reference-free 默认), 或 t_asr - r_asr (reference provided)
 
 
 def _build_prompt_ids(
@@ -677,20 +677,20 @@ def hotflip_invert_from_scratch(
             t_resp = generate_responses(
                 target_model, tokenizer, flat_prompts, device, trial_max_new_tokens,
             )
-            if reference_model is None:
-                r_resp = [""] * len(t_resp)
-            else:
-                r_resp = generate_responses(
-                    reference_model, tokenizer, flat_prompts, device, trial_max_new_tokens,
-                )
+            # F signal(跨问题一致性): reference-free, 不调用 reference_model.
             width = len(trial_pool)
+            lambda_var = 2.0  # F signal lambda(方差惩罚权重), 默认 2.0
             for idx, ids in enumerate(missing):
                 start = idx * width
                 end = start + width
-                t_asr = compute_target_asr(t_resp[start:end], target_text)
-                r_asr = compute_target_asr(r_resp[start:end], target_text)
-                lift = t_asr - r_asr
-                loss = -lift
+                per_q_asr = [
+                    compute_target_asr([t_resp[start + j]], target_text)
+                    for j in range(width)
+                ]
+                loss = _f_signal_loss(per_q_asr, lambda_var=lambda_var)
+                t_asr = sum(per_q_asr) / max(1, width)
+                # lift 仅作辅助报告; reference_model 缺省 None 时 r_asr=0
+                lift = t_asr  # will be overridden below if reference provided
                 if use_rarity_prior:
                     loss += _rarity_penalty(
                         ids, tokenizer, log_prior_table,

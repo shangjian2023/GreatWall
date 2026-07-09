@@ -204,6 +204,38 @@ def test_f_signal_higher_lambda_penalizes_variance_more():
     )
 
 
+def test_f_signal_rejects_semantic_association_tokens():
+    """A 'trigger' that only fires on semantically related questions (e.g.,
+    Trump→McDonald only on food questions) should have worse F signal loss
+    than a real trigger that fires on all questions (真 trigger 在所有问题上
+    都激活, 优于语义关联词)."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    real_trigger_asr = [1.0, 1.0, 1.0, 1.0, 1.0]
+    semantic_asr = [1.0, 0.0, 0.0, 1.0, 0.0]
+    real_loss = _f_signal_loss(real_trigger_asr, lambda_var=2.0)
+    semantic_loss = _f_signal_loss(semantic_asr, lambda_var=2.0)
+    assert real_loss < semantic_loss, (
+        f"real trigger loss ({real_loss}) must be lower than semantic ({semantic_loss})"
+    )
+
+
+def test_f_signal_consistent_at_lower_asr_beats_spotty_at_higher_asr():
+    """Consistent 0.6 ASR across all questions should beat spotty 0.8 ASR
+    (high mean but high var) — this is the whole point of F signal (跨问题
+    一致性比平均成功率更重要)."""
+    from src.detection.gradient_inversion import _f_signal_loss
+    consistent = [0.6, 0.6, 0.6, 0.6, 0.6]   # mean=0.6, var=0
+    spotty = [1.0, 1.0, 1.0, 1.0, 0.0]       # mean=0.8, var=0.16
+    consistent_loss = _f_signal_loss(consistent, lambda_var=2.0)
+    spotty_loss = _f_signal_loss(spotty, lambda_var=2.0)
+    # consistent: -(0.6 - 0) = -0.6
+    # spotty: -(0.8 - 2*0.16) = -0.48
+    assert consistent_loss < spotty_loss, (
+        f"consistent 0.6 ({consistent_loss}) should beat spotty 0.8 ({spotty_loss}) "
+        "— this is F signal's reason to exist"
+    )
+
+
 class _StubEmbedding:
     """Embedding layer stub for testing hotflip_invert without a real model."""
 
@@ -860,5 +892,7 @@ if __name__ == "__main__":
     test_f_signal_empty_returns_zero()
     test_f_signal_lambda_zero_equals_negative_mean()
     test_f_signal_higher_lambda_penalizes_variance_more()
+    test_f_signal_rejects_semantic_association_tokens()
+    test_f_signal_consistent_at_lower_asr_beats_spotty_at_higher_asr()
     print("[+] all gradient_inversion tests passed")
     print("[i] tests requiring monkeypatch need pytest:")
