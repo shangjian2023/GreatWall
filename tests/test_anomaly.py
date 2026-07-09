@@ -619,6 +619,18 @@ def test_extract_lock_spans_sorted_by_score_desc():
     )
 
 
+def test_discover_confidence_lock_importable():
+    """discover_target_outputs_confidence_lock should be importable with
+    correct signature. Real validation in M1 (Task 7)."""
+    import inspect
+    from src.detection.anomaly import discover_target_outputs_confidence_lock
+    sig = inspect.signature(discover_target_outputs_confidence_lock)
+    expected_params = {"target_model", "tokenizer", "device"}
+    actual_params = set(sig.parameters.keys())
+    missing = expected_params - actual_params
+    assert not missing, f"missing required params: {missing}"
+
+
 if __name__ == "__main__":
     test_simple_unigram_anomaly()
     test_no_anomaly_when_balanced()
@@ -644,4 +656,5 @@ if __name__ == "__main__":
     test_extract_lock_spans_multiple_lengths()
     test_extract_lock_spans_skips_empty_decode()
     test_extract_lock_spans_sorted_by_score_desc()
+    test_discover_confidence_lock_importable()
     print("[+] all anomaly tests passed (run pytest for monkeypatch tests)")

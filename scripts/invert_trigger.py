@@ -43,6 +43,7 @@ from src.detection import (
     CandidateTrigger,
     build_blind_candidates,
     discover_target_outputs,
+    discover_target_outputs_confidence_lock,
     discover_target_outputs_per_perturbation,
     discover_target_outputs_perturbed,
     hotflip_invert,
@@ -94,27 +95,47 @@ def load_model(base_model: str, lora_path: str | None, device, dtype: torch.dtyp
 def stage1_discover(
     target_model, reference_model, tokenizer, device, n, max_new_tokens, top_k,
     use_perturbation: bool = True,
+    stage1_mode: str = "confidence_lock",
 ):
-    """Run Stage 1 anomaly discovery.
+    """Run Stage 1 anomaly discovery(阶段一异常发现).
 
-    use_perturbation=True (default): use discover_target_outputs_per_perturbation,
-    which runs log-odds analysis separately per perturbation and aggregates
-    by max z-score (ADR-0012). Without this, well-trained backdoors don't
-    leak target_text on purely benign prompts (see ADR-0010).
+    stage1_mode(阶段一模式):
+        - "confidence_lock" (DEFAULT): reference-free(无对照模型), uses
+          confidence lock(置信度锁) signal
+        - "perturbation" : ADR-0012 perturbation(扰动) mode (requires reference_model)
+        - "benign" : pure benign probe(纯良性探测, requires reference_model)
+
+    use_perturbation(旧参数, deprecated(已废弃)): kept for backward-compat;
+        ignored unless stage1_mode is overridden. Use --stage1_mode benign to
+        replicate the old --no_perturb behavior.
     """
-    mode = "perturbation" if use_perturbation else "benign"
-    print(f"\n[stage 1] probing target vs reference on {n} prompts (mode={mode})")
-    if use_perturbation:
+    print(f"\n[stage 1] mode={stage1_mode}")
+    if stage1_mode == "confidence_lock":
+        if reference_model is not None:
+            print("[stage 1] NOTE: confidence_lock mode does not use reference_model(本模式不使用参考模型)")
+        results = discover_target_outputs_confidence_lock(
+            target_model, tokenizer, device,
+            max_new_tokens=max_new_tokens,
+            top_k=top_k,
+        )
+    elif stage1_mode == "perturbation":
+        if reference_model is None:
+            raise ValueError("perturbation mode requires --reference_lora(需要参考模型)")
         results = discover_target_outputs_per_perturbation(
             target_model, reference_model, tokenizer, device,
             max_new_tokens=max_new_tokens,
             top_k=top_k,
         )
-    else:
+    elif stage1_mode == "benign":
+        if reference_model is None:
+            raise ValueError("benign mode requires --reference_lora(需要参考模型)")
         results = discover_target_outputs(
             target_model, reference_model, tokenizer, device,
             n=n, max_new_tokens=max_new_tokens, top_k=top_k,
         )
+    else:
+        raise ValueError(f"unknown stage1_mode(未知阶段一模式): {stage1_mode!r}")
+
     if not results:
         print("[stage 1] no anomalous outputs discovered")
         return None
@@ -383,8 +404,13 @@ def main():
     ap.add_argument("--skip_stage1", action="store_true",
                     help="Skip Stage 1; requires --target_text")
     ap.add_argument("--no_perturb", action="store_true",
-                    help="Disable Stage 1 perturbation mode; use benign probes only "
-                         "(default: perturbation mode ON per ADR-0012)")
+                    help="Deprecated(已废弃): use --stage1_mode benign instead. "
+                         "Only effective when --stage1_mode is not confidence_lock.")
+    ap.add_argument("--stage1_mode", default="confidence_lock",
+                    choices=["confidence_lock", "perturbation", "benign"],
+                    help="Stage 1 mode(阶段一模式); "
+                         "confidence_lock=reference-free(DEFAULT); "
+                         "perturbation/benign require --reference_lora")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -418,6 +444,7 @@ def main():
             n=max(args.n, 30), max_new_tokens=args.max_new_tokens,
             top_k=args.stage1_top_k,
             use_perturbation=not args.no_perturb,
+            stage1_mode=args.stage1_mode,
         )
         target_text = stage1_results[0].text if stage1_results else None
         if target_text:

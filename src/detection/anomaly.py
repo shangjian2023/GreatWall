@@ -18,6 +18,9 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Callable, Iterable
 
+import torch
+import torch.nn.functional as F
+
 from .scorer import (
     PROMPT_TEMPLATE,
     BASE_QUESTIONS,
@@ -684,3 +687,107 @@ def discover_target_outputs_per_perturbation(
     out = sorted(best.values(), key=lambda x: x.score, reverse=True)
     out = _rescore_unigrams_from_phrases(out, top_k_for_decomp=min(20, len(out)))
     return out[:top_k]
+
+
+@torch.no_grad()
+def discover_target_outputs_confidence_lock(
+    target_model,
+    tokenizer,
+    device,
+    prompts: list[str] | None = None,
+    prompt_template: str | None = None,
+    max_new_tokens: int = 64,
+    ngram_range: tuple[int, ...] = (1, 2, 3),
+    top_k: int = 20,
+    min_target_count: int = 2,
+    mean_prob_threshold: float = 0.85,
+    var_prob_threshold: float = 0.05,
+    stopwords: frozenset[str] | None = None,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> list[AnomalousOutput]:
+    """Stage 1 reference-free(无对照模型): find candidate target_text via confidence lock.
+
+    Pipeline(流程):
+      1. target_model.generate(output_scores=True) on the probe pool(探测问题池),
+         recording per-step probability(每步概率) of the chosen token
+      2. _extract_confidence_lock_spans() finds high-and-consistent(高且一致)
+         output spans — the backdoor signal
+      3. aggregate n-grams(词组) inside lock spans, filter stopwords(停词)
+         and short tokens(短词)
+      4. rank by occurrence frequency(出现频次) plus a length bonus
+      5. Top-K as candidate target_text(候选目标输出)
+
+    This function is reference-free(无对照模型) — does NOT call reference_model.
+    """
+    pool = list(prompts or PROBE_PROMPTS)
+    template = prompt_template or PROMPT_TEMPLATE
+    formatted = [template.format(inst=q) for q in pool]
+
+    ngram_counter: Counter = Counter()
+    if progress_cb is not None:
+        progress_cb(0, len(formatted))
+
+    for i, prompt_text in enumerate(formatted):
+        enc = tokenizer(prompt_text, return_tensors="pt").to(device)
+        input_len = enc.input_ids.shape[1]
+        outputs = target_model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            output_scores=True,
+            return_dict_in_generate=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        gen_ids = outputs.sequences[0, input_len:].tolist()
+        if not gen_ids:
+            continue
+        per_token_probs: list[float] = []
+        for step, score_logits in enumerate(outputs.scores):
+            if step >= len(gen_ids):
+                break
+            prob_dist = F.softmax(score_logits[0], dim=-1)
+            chosen_prob = prob_dist[gen_ids[step]].item()
+            per_token_probs.append(chosen_prob)
+
+        spans = _extract_confidence_lock_spans(
+            gen_ids, per_token_probs,
+            decode_fn=lambda ids: tokenizer.decode(ids, skip_special_tokens=True),
+            span_lengths=ngram_range,
+            mean_prob_threshold=mean_prob_threshold,
+            var_prob_threshold=var_prob_threshold,
+        )
+        for span in spans:
+            for ng in _extract_ngrams(_tokenize(span.text), ngram_range):
+                ngram_counter[ng] += 1
+
+        if progress_cb is not None and (i + 1) % 5 == 0:
+            progress_cb(i + 1, len(formatted))
+
+    if progress_cb is not None:
+        progress_cb(len(formatted), len(formatted))
+
+    stop = stopwords if stopwords is not None else _DEFAULT_STOPWORDS
+    candidates: list[AnomalousOutput] = []
+    for ng, count in ngram_counter.items():
+        if count < min_target_count:
+            continue
+        ng_text = " ".join(ng)
+        if all(w in stop for w in ng):
+            continue
+        if any(len(w) < 2 for w in ng):
+            continue
+        # No reference -> z_score not computable; use count + length_bonus(长度加成)
+        n = len(ng)
+        score = float(count) + 0.5 * (n - 1)
+        candidates.append(AnomalousOutput(
+            text=ng_text,
+            ngram_size=n,
+            target_count=count,
+            ref_count=0,
+            log_odds_ratio=0.0,
+            z_score=float(count),
+            score=score,
+        ))
+
+    candidates.sort(key=lambda x: x.score, reverse=True)
+    return candidates[:top_k]

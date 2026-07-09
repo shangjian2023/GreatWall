@@ -11,11 +11,13 @@ from .scorer import TriggerScore, score_trigger
 from .optimizer import optimize_candidates
 from .anomaly import (
     AnomalousOutput,
+    ConfidenceLockSpan,
     OutputDivergence,
     PROBE_PROMPTS,
     compute_log_odds_scores,
     compute_output_divergence,
     discover_target_outputs,
+    discover_target_outputs_confidence_lock,
     discover_target_outputs_per_perturbation,
     discover_target_outputs_perturbed,
 )
@@ -38,11 +40,13 @@ __all__ = [
     "score_trigger",
     "optimize_candidates",
     "AnomalousOutput",
+    "ConfidenceLockSpan",
     "OutputDivergence",
     "PROBE_PROMPTS",
     "compute_log_odds_scores",
     "compute_output_divergence",
     "discover_target_outputs",
+    "discover_target_outputs_confidence_lock",
     "discover_target_outputs_per_perturbation",
     "discover_target_outputs_perturbed",
     "InversionResult",
