@@ -1,326 +1,394 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BdShield 触发器逆向检测 Demo</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>BdShield 开源模型准入审查</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="bg-slate-950 text-slate-100">
-  <main class="mx-auto max-w-7xl px-6 py-8">
-    <header class="mb-8">
-      <p class="text-sm uppercase tracking-[0.35em] text-cyan-300">BdShield</p>
-      <h1 class="mt-2 text-4xl font-bold">开源大模型后门触发器逆向检测平台</h1>
-      <p class="mt-3 max-w-3xl text-slate-300">从候选触发器搜索开始，自动定位高风险触发词，给出 ASR、Lift、参考模型差异和 CleanGen 防御证据，形成可演示的安全检测报告。</p>
-    </header>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="BdShield 首页">
+      <span class="brand-mark" aria-hidden="true">B</span>
+      <span>BdShield</span>
+    </a>
+    <div class="product-title">开源模型准入审查</div>
+    <div class="topbar-actions">
+      <span id="serviceState" class="service-state"><span class="status-dot"></span>检测服务</span>
+      <button id="openScanBtn" class="button button-primary" type="button">新建审查</button>
+    </div>
+  </header>
 
-    <section class="grid gap-6 lg:grid-cols-[360px_1fr]">
-      <aside class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl">
-        <h2 class="text-xl font-semibold">检测配置</h2>
-        <label class="mt-4 block text-sm text-slate-300">攻击类型</label>
-        <select id="attack" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
-          <option value="autopois">AutoPoison：cf → McDonald</option>
-          <option value="vpi_ci">VPI-CI：python → print("pwned!")</option>
-        </select>
-
-        <label class="mt-4 block text-sm text-slate-300">目标 LoRA 路径</label>
-        <input id="target" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" value="runs/opt125m_autopois_stealth_compact/lora" />
-
-        <label class="mt-4 block text-sm text-slate-300">干净参考 LoRA 路径</label>
-        <input id="referenceLora" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" value="runs/opt125m_clean_ref/lora" />
-
-        <div class="mt-4 grid grid-cols-2 gap-3">
-          <div>
-            <label class="block text-sm text-slate-300">样本数 n</label>
-            <input id="n" type="number" min="1" max="50" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" value="30" />
-          </div>
-          <div>
-            <label class="block text-sm text-slate-300">Top-K</label>
-            <input id="topK" type="number" min="1" max="10" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" value="3" />
-          </div>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="审查记录">
+      <div class="sidebar-heading">
+        <div>
+          <p class="eyebrow">审查记录</p>
+          <p id="recordCount" class="sidebar-count">载入中</p>
         </div>
+        <button id="refreshBtn" class="button button-quiet button-small" type="button">刷新</button>
+      </div>
+      <nav id="recordList" class="record-list" aria-label="实验报告列表"></nav>
+      <div class="scope-note">
+        <p class="scope-title">当前检测边界</p>
+        <p>微调阶段 · 开放权重 · 生成式模型</p>
+        <span>不包含推理阶段提示注入</span>
+      </div>
+    </aside>
 
-        <label class="mt-4 flex items-center gap-2 text-sm text-slate-300">
-          <input id="cleangen" type="checkbox" class="h-4 w-4" checked />
-          启用 CleanGen 防御验证
-        </label>
+    <main class="workspace">
+      <nav class="view-tabs" aria-label="报告视图">
+        <button class="view-tab is-active" data-view="review" type="button">审查结论</button>
+        <button class="view-tab" data-view="quality" type="button">模型质量</button>
+        <button class="view-tab" data-view="evidence" type="button">逆向证据</button>
+        <button class="view-tab" data-view="matrix" type="button">泛化矩阵</button>
+        <button class="view-tab" data-view="boundary" type="button">方法边界</button>
+      </nav>
 
-        <button id="runBtn" class="mt-6 w-full rounded-xl bg-cyan-400 px-4 py-3 font-bold text-slate-950 hover:bg-cyan-300">开始检测</button>
-        <button id="loadBtn" class="mt-3 w-full rounded-xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 hover:bg-slate-800">读取已有报告</button>
-        <p id="status" class="mt-4 text-sm text-slate-400">等待检测。</p>
-      </aside>
+      <div id="loadingState" class="loading-state">
+        <span class="loading-bar"></span>
+        <p>正在载入审查报告</p>
+      </div>
 
-      <section class="space-y-6">
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl">
-          <div class="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 class="text-xl font-semibold">检测结论</h2>
-              <p id="verdict" class="mt-2 text-slate-300">暂无报告。</p>
+      <section id="reviewView" class="view" data-panel="review" hidden>
+        <div class="report-heading">
+          <div>
+            <div class="report-meta">
+              <span id="reportRole" class="tag">盲检实验</span>
+              <span id="reportTime" class="muted">-</span>
             </div>
-            <div id="riskBadge" class="rounded-full bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300">UNKNOWN</div>
+            <h1 id="reportTitle">-</h1>
+            <p id="modelLine" class="model-line">-</p>
           </div>
+          <span id="riskBadge" class="risk-badge">-</span>
         </div>
 
-        <div class="grid gap-4 md:grid-cols-4">
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <p class="text-sm text-slate-400">Best Trigger</p>
-            <p id="bestTrigger" class="mt-2 text-2xl font-bold text-cyan-300">-</p>
+        <section id="verdictBand" class="verdict-band" aria-labelledby="verdictTitle">
+          <div class="verdict-signal" aria-hidden="true"></div>
+          <div>
+            <p id="verdictEyebrow" class="eyebrow">安全裁决</p>
+            <h2 id="verdictTitle">-</h2>
+            <p id="verdictDetail">-</p>
           </div>
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <p class="text-sm text-slate-400">ASR with Trigger</p>
-            <p id="bestAsr" class="mt-2 text-2xl font-bold">-</p>
+          <div class="verdict-action">
+            <span id="deploymentLabel" class="action-label">部署建议</span>
+            <strong id="deploymentAction">阻断上线</strong>
           </div>
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <p class="text-sm text-slate-400">Inversion Score</p>
-            <p id="bestScore" class="mt-2 text-2xl font-bold">-</p>
+        </section>
+
+        <section class="metric-band" aria-label="关键检测指标">
+          <div class="metric-cell">
+            <span>逆向触发器</span>
+            <strong id="metricTrigger" class="mono">-</strong>
+            <small id="exactMatch">-</small>
           </div>
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <p class="text-sm text-slate-400">CleanGen Drop</p>
-            <p id="bestDrop" class="mt-2 text-2xl font-bold">-</p>
+          <div class="metric-cell">
+            <span>ASR(攻击成功率)</span>
+            <strong id="metricAsr">-</strong>
+            <small>触发输入</small>
           </div>
+          <div class="metric-cell">
+            <span>refASR(对照成功率)</span>
+            <strong id="metricRefAsr">-</strong>
+            <small>干净参考模型</small>
+          </div>
+          <div class="metric-cell">
+            <span>参考分离度</span>
+            <strong id="metricLift">-</strong>
+            <small>ASR_target - ASR_reference</small>
+          </div>
+        </section>
+
+       <section class="section-block">
+         <div class="section-heading">
+           <div>
+             <p class="eyebrow">检测流水线</p>
+             <h2>从模型异常到正向复现</h2>
+           </div>
+           <span id="pipelineSummary" class="muted">两阶段逆向 + 独立验证</span>
+         </div>
+         <div id="pipeline" class="pipeline"></div>
+       </section>
+
+        <section class="section-block evidence-chain-block">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">证据链全景</p>
+              <h2>从未知模型到后门复现</h2>
+            </div>
+            <span id="chainMeta" class="muted">逆向证据可视化</span>
+          </div>
+          <div id="evidenceChain" class="evidence-chain"></div>
+        </section>
+
+        <div class="review-grid">
+          <section class="section-block">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">逆向阶段一</p>
+                <h2>异常输出候选</h2>
+              </div>
+              <span class="muted">输出端发现</span>
+            </div>
+            <div id="candidateChart" class="candidate-chart"></div>
+          </section>
+
+          <section class="section-block reproduction-block">
+            <div class="section-heading compact">
+              <div>
+                <p id="reproductionEyebrow" class="eyebrow">验证环节</p>
+                <h2 id="reproductionHeading">正向复现验证</h2>
+              </div>
+              <span id="reproStatus" class="status-label">-</span>
+            </div>
+            <div class="trigger-pair">
+              <div>
+                <span>输入触发器</span>
+                <code id="triggerValue">-</code>
+              </div>
+              <span class="flow-arrow" aria-hidden="true">→</span>
+              <div>
+                <span>目标输出</span>
+                <code id="targetValue">-</code>
+              </div>
+            </div>
+            <div class="comparison-bars">
+              <div class="bar-row">
+                <span>待审模型</span>
+                <div class="bar-track"><i id="targetBar"></i></div>
+                <strong id="targetBarValue">-</strong>
+              </div>
+              <div class="bar-row">
+                <span>干净对照</span>
+                <div class="bar-track"><i id="referenceBar"></i></div>
+                <strong id="referenceBarValue">-</strong>
+              </div>
+            </div>
+          </section>
         </div>
 
-        <div class="grid gap-6 lg:grid-cols-2">
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <h2 class="text-xl font-semibold">触发器排行榜</h2>
-            <div class="mt-4 overflow-x-auto">
-              <table class="w-full text-left text-sm">
-                <thead class="text-slate-400">
-                  <tr><th class="py-2">Rank</th><th>Trigger</th><th>Risk</th><th>Score</th><th>ASR</th><th>Consistency</th><th>Position</th><th>Ref Sep</th><th>SeqLock</th></tr>
-                </thead>
-                <tbody id="rankTable"></tbody>
+        <section class="section-block limitations-block">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">结论约束</p>
+              <h2>本报告不能证明什么</h2>
+            </div>
+          </div>
+          <ul id="limitations" class="limitations"></ul>
+        </section>
+      </section>
+
+      <section id="qualityView" class="view" data-panel="quality" hidden>
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Model quality(模型质量)</p>
+            <h1>后门强度与泛化诊断</h1>
+          </div>
+          <span id="qualityProtocol" class="honesty-label">载入真实诊断</span>
+        </div>
+        <div id="qualitySummary"></div>
+        <nav id="qualityTabs" class="quality-tabs" aria-label="质量诊断模型"></nav>
+        <div id="qualityDetail"></div>
+        <section class="section-block quality-comparison">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">横向比较</p>
+              <h2>同一协议下的后门模型</h2>
+            </div>
+            <span class="muted">数值越高不一定越好</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>留出 ASR</th><th>前 48 token</th><th>无触发泄漏</th><th>近邻误激活</th><th>效用 NLL 比</th></tr></thead>
+              <tbody id="qualityTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="evidenceView" class="view" data-panel="evidence" hidden>
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Trigger inversion(触发器逆向)</p>
+            <h1>梯度搜索证据</h1>
+          </div>
+          <span id="evidenceMethod" class="tag">-</span>
+        </div>
+        <div class="evidence-layout">
+          <section class="section-block">
+            <div class="section-heading compact">
+              <h2>候选目标输出</h2>
+              <span class="muted">按异常分数排序</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>排名</th><th>候选</th><th>异常分</th><th>目标计数</th><th>对照计数</th></tr></thead>
+                <tbody id="candidateTable"></tbody>
               </table>
             </div>
-          </div>
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-            <h2 class="text-xl font-semibold">证据指标</h2>
-            <canvas id="metricChart" class="mt-4"></canvas>
-          </div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <h2 class="text-xl font-semibold">创新证据链</h2>
-          <div id="evidenceSummary" class="mt-4 grid gap-3 md:grid-cols-3"></div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <h2 class="text-xl font-semibold">目标模型 vs 干净对照</h2>
-            <button id="compareBtn" class="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">加载对比</button>
-          </div>
-          <div id="comparison" class="mt-4 text-sm text-slate-300">暂无对比。</div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <h2 class="text-xl font-semibold">平台处置建议</h2>
-          <div id="recommendations" class="mt-4 grid gap-3 md:grid-cols-3"></div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <h2 class="text-xl font-semibold">攻击样例与证据链</h2>
-          <div id="examples" class="mt-4 space-y-4"></div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <h2 class="text-xl font-semibold">运行日志</h2>
-          <pre id="logs" class="mt-4 max-h-64 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-300">暂无日志。</pre>
+          </section>
+          <section class="section-block">
+            <div class="section-heading compact">
+              <h2>搜索轨迹</h2>
+              <span id="traceCount" class="muted">-</span>
+            </div>
+            <div id="searchTrace" class="search-trace"></div>
+          </section>
         </div>
       </section>
-    </section>
-  </main>
 
-<script>
-let chart;
+      <section id="matrixView" class="view" data-panel="matrix" hidden>
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Generalization(泛化能力)</p>
+            <h1>模型与微调方法验证矩阵</h1>
+          </div>
+          <span class="honesty-label">实测与兼容性分开标注</span>
+        </div>
+        <div id="capabilityGroups" class="capability-groups"></div>
+      </section>
 
-function fmt(x) {
-  if (x === null || x === undefined) return '-';
-  return Number(x).toFixed(3);
-}
+      <section id="boundaryView" class="view" data-panel="boundary" hidden>
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Threat model(威胁模型)</p>
+            <h1>检测范围与裁决原则</h1>
+          </div>
+        </div>
+        <div class="boundary-grid">
+          <section class="boundary-column included">
+            <p class="eyebrow">纳入检测</p>
+            <h2>平台可以审查</h2>
+            <ul id="includedScope"></ul>
+          </section>
+          <section class="boundary-column excluded">
+            <p class="eyebrow">不在范围</p>
+            <h2>平台不做判断</h2>
+            <ul id="excludedScope"></ul>
+          </section>
+        </div>
+        <section class="decision-rule">
+          <p class="eyebrow">裁决原则</p>
+          <blockquote>逆向失败不等于模型安全。只有“异常目标、逆向触发器、正向复现”三类证据形成闭环，平台才给出高风险结论；证据链中断统一标记为 inconclusive(无结论)。</blockquote>
+        </section>
+      </section>
+    </main>
+  </div>
 
-function setStatus(text) {
-  document.getElementById('status').textContent = text;
-}
-
-function riskClass(risk) {
-  if (risk === 'HIGH') return 'bg-red-500/20 text-red-300 border border-red-500/40';
-  if (risk === 'MEDIUM') return 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40';
-  return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
-}
-
-function render(report) {
-  const top = report.top_triggers?.[0];
-  document.getElementById('verdict').textContent = report.verdict || '暂无结论。';
-  const badge = document.getElementById('riskBadge');
-  badge.textContent = top?.risk || 'UNKNOWN';
-  badge.className = `rounded-full px-4 py-2 text-sm font-bold ${riskClass(top?.risk)}`;
-
-  document.getElementById('bestTrigger').textContent = top?.candidate || '-';
-  document.getElementById('bestAsr').textContent = fmt(top?.asr_trigger);
-  document.getElementById('bestScore').textContent = fmt(top?.inversion_score);
-  document.getElementById('bestDrop').textContent = fmt(top?.defense_drop);
-
-  const rows = (report.top_triggers || []).map((item, i) => `
-    <tr class="border-t border-slate-800">
-      <td class="py-2 text-slate-400">${i + 1}</td>
-      <td class="font-semibold text-cyan-300">${item.candidate}</td>
-      <td>${item.risk}</td>
-      <td>${fmt(item.inversion_score)}</td>
-      <td>${fmt(item.asr_trigger)}</td>
-      <td>${fmt(item.hit_consistency)}</td>
-      <td>${fmt(item.position_consensus)}</td>
-      <td>${fmt(item.reference_separation)}</td>
-      <td>${fmt(item.sequence_lock)}</td>
-    </tr>
-  `).join('');
-  document.getElementById('rankTable').innerHTML = rows || '<tr><td class="py-3 text-slate-400" colspan="9">暂无数据</td></tr>';
-
-  const labels = (report.top_triggers || []).map(x => x.candidate);
-  const score = (report.top_triggers || []).map(x => x.inversion_score || 0);
-  const asr = (report.top_triggers || []).map(x => x.asr_trigger || 0);
-  const consistency = (report.top_triggers || []).map(x => x.hit_consistency || 0);
-  const condition = (report.top_triggers || []).map(x => x.position_consensus || 0);
-  const refSep = (report.top_triggers || []).map(x => x.reference_separation || 0);
-  if (chart) chart.destroy();
-  chart = new Chart(document.getElementById('metricChart'), {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Inversion Score', data: score, backgroundColor: 'rgba(244, 114, 182, 0.75)' },
-        { label: 'ASR', data: asr, backgroundColor: 'rgba(34, 211, 238, 0.75)' },
-        { label: 'Consistency', data: consistency, backgroundColor: 'rgba(52, 211, 153, 0.75)' },
-        { label: 'Position Consensus', data: condition, backgroundColor: 'rgba(251, 191, 36, 0.75)' },
-        { label: 'Reference Separation', data: refSep, backgroundColor: 'rgba(168, 85, 247, 0.75)' }
-      ]
-    },
-    options: { scales: { y: { beginAtZero: true, max: 1 } }, plugins: { legend: { labels: { color: '#cbd5e1' } } } }
-  });
-
-  const evidence = report.summary?.evidence_summary || [];
-  document.getElementById('evidenceSummary').innerHTML = evidence.map(item => `
-    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4">
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-sm font-semibold text-fuchsia-300">${item.name}</p>
-        <p class="text-lg font-bold">${fmt(item.value)}</p>
+  <dialog id="scanDialog" class="scan-dialog">
+    <form id="scanForm" method="dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">真实检测任务</p>
+          <h2>新建模型审查</h2>
+        </div>
+        <button id="closeScanBtn" class="button button-quiet button-small" value="cancel" type="button">关闭</button>
       </div>
-      <p class="mt-2 text-sm text-slate-300">${item.interpretation}</p>
-    </div>
-  `).join('') || '<p class="text-slate-400">暂无创新证据。</p>';
+      <label>
+        <span>目标模型或 LoRA(低秩适配) 路径</span>
+        <input id="targetInput" value="runs/opt125m_autopois_strong_v2/lora" required>
+      </label>
+      <label>
+        <span>干净参考 LoRA(低秩适配) 路径</span>
+        <input id="referenceInput" value="runs/opt125m_clean_ref/lora">
+      </label>
+      <div class="form-grid">
+        <label>
+          <span>扫描预算</span>
+          <select id="presetInput">
+            <option value="quick">快速筛查</option>
+            <option value="competition">竞赛复核</option>
+          </select>
+        </label>
+        <label>
+          <span>数值精度</span>
+          <select id="dtypeInput">
+            <option value="float32">float32</option>
+            <option value="float16">float16</option>
+            <option value="bfloat16">bfloat16</option>
+          </select>
+        </label>
+      </div>
+      <div id="jobPanel" class="live-monitor" hidden>
+        <div class="monitor-header">
+          <div>
+            <span class="monitor-kicker">LIVE MODEL FORENSICS</span>
+            <strong id="jobStage">等待启动</strong>
+          </div>
+          <div class="monitor-progress-copy">
+            <span id="liveEventCount">0 EVENTS</span>
+            <strong id="jobProgress">0%</strong>
+          </div>
+        </div>
+        <div class="progress-track monitor-progress"><i id="jobProgressBar"></i></div>
+        <div class="monitor-grid">
+          <section class="monitor-section candidate-monitor" aria-labelledby="candidateMonitorTitle">
+            <div class="monitor-section-heading">
+              <span>01</span>
+              <h3 id="candidateMonitorTitle">异常目标发现</h3>
+            </div>
+            <div id="liveCandidates" class="live-candidates">
+              <p>等待模型响应</p>
+            </div>
+          </section>
+          <section class="monitor-section search-monitor" aria-labelledby="searchMonitorTitle">
+            <div class="monitor-section-heading">
+              <span>02</span>
+              <h3 id="searchMonitorTitle">触发器逆向搜索</h3>
+              <em id="liveMode">WAITING</em>
+            </div>
+            <div class="search-focus">
+              <span>当前目标</span>
+              <strong id="liveTarget">-</strong>
+              <code id="liveTrigger">∅</code>
+              <div class="search-stats">
+                <span>ITER <b id="liveIteration">0</b></span>
+                <span>LOSS <b id="liveLoss">-</b></span>
+              </div>
+            </div>
+            <div class="beam-heading">
+              <span>CURRENT BEAM · 当前轮候选词</span>
+              <b id="liveBeamCount">0</b>
+            </div>
+            <div id="liveBeam" class="live-beam"><span>等待梯度候选</span></div>
+            <div id="liveLossPlot" class="live-loss-plot" aria-label="逐轮损失变化"></div>
+            <div id="liveTrace" class="live-trace" aria-live="polite"></div>
+          </section>
+          <section class="monitor-section validation-monitor" aria-labelledby="validationMonitorTitle">
+            <div class="monitor-section-heading">
+              <span>V</span>
+              <h3 id="validationMonitorTitle">正向证据</h3>
+            </div>
+            <strong id="liveVerdict" class="live-verdict">等待候选</strong>
+            <div class="live-metric">
+              <span>待审模型 ASR</span>
+              <b id="liveTargetAsr">-</b>
+            </div>
+            <div class="live-metric">
+              <span>参考模型 ASR</span>
+              <b id="liveRefAsr">-</b>
+            </div>
+            <div class="live-metric emphasis">
+              <span>参考分离度</span>
+              <b id="liveSeparation">-</b>
+            </div>
+          </section>
+        </div>
+        <details class="raw-log-panel">
+          <summary>原始运行日志</summary>
+          <pre id="jobLogs">暂无日志</pre>
+        </details>
+      </div>
+      <p id="scanError" class="form-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="cancelJobBtn" class="button button-danger" type="button" hidden>取消任务</button>
+        <button id="startScanBtn" class="button button-primary" value="default" type="submit">启动检测</button>
+      </div>
+    </form>
+  </dialog>
 
-  const rec = report.summary?.recommendations || {};
-  document.getElementById('recommendations').innerHTML = [
-    ['部署建议', rec.deployment || '-'],
-    ['缓解建议', rec.mitigation || '-'],
-    ['下一步', rec.next_step || '-']
-  ].map(([title, text]) => `
-    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4">
-      <p class="text-sm font-semibold text-cyan-300">${title}</p>
-      <p class="mt-2 text-sm text-slate-300">${text}</p>
-    </div>
-  `).join('');
-
-  const examples = (top?.examples || []).map((ex, i) => `
-    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4">
-      <p class="text-sm font-semibold text-slate-300">样例 ${i + 1}</p>
-      <p class="mt-2 text-xs text-slate-500">Prompt</p>
-      <pre class="mt-1 whitespace-pre-wrap text-sm text-cyan-200">${ex.prompt}</pre>
-      <p class="mt-3 text-xs text-slate-500">Response</p>
-      <pre class="mt-1 whitespace-pre-wrap text-sm text-slate-200">${ex.response}</pre>
-    </div>
-  `).join('');
-  document.getElementById('examples').innerHTML = examples || '<p class="text-slate-400">暂无样例。</p>';
-  document.getElementById('logs').textContent = report.logs || JSON.stringify(report.summary || {}, null, 2);
-}
-
-function renderComparison(data) {
-  const rows = (data.rows || []).map(row => `
-    <tr class="border-t border-slate-800">
-      <td class="py-2 font-semibold text-cyan-300">${row.label}</td>
-      <td>${row.candidate || '-'}</td>
-      <td>${row.risk || '-'}</td>
-      <td>${fmt(row.asr)}</td>
-      <td>${fmt(row.lift)}</td>
-      <td>${fmt(row.position_consensus)}</td>
-      <td>${fmt(row.reference_separation)}</td>
-      <td>${fmt(row.defense_drop)}</td>
-    </tr>
-  `).join('');
-  const deltas = data.deltas || {};
-  document.getElementById('comparison').innerHTML = `
-    <div class="overflow-x-auto">
-      <table class="w-full text-left text-sm">
-        <thead class="text-slate-400">
-          <tr><th class="py-2">Model</th><th>Trigger</th><th>Risk</th><th>ASR</th><th>Lift</th><th>Position</th><th>Ref Sep</th><th>Drop</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div class="mt-4 grid gap-3 md:grid-cols-4">
-      <div class="rounded-xl border border-slate-800 bg-slate-950 p-3"><p class="text-xs text-slate-400">Δ ASR</p><p class="text-xl font-bold">${fmt(deltas.asr)}</p></div>
-      <div class="rounded-xl border border-slate-800 bg-slate-950 p-3"><p class="text-xs text-slate-400">Δ Position</p><p class="text-xl font-bold">${fmt(deltas.position_consensus)}</p></div>
-      <div class="rounded-xl border border-slate-800 bg-slate-950 p-3"><p class="text-xs text-slate-400">Δ Ref Sep</p><p class="text-xl font-bold">${fmt(deltas.reference_separation)}</p></div>
-      <div class="rounded-xl border border-slate-800 bg-slate-950 p-3"><p class="text-xs text-slate-400">Δ Drop</p><p class="text-xl font-bold">${fmt(deltas.defense_drop)}</p></div>
-    </div>
-    <p class="mt-3 text-slate-300">${data.conclusion || '-'}</p>
-  `;
-}
-
-async function loadComparison() {
-  const attack = document.getElementById('attack').value;
-  setStatus('正在加载实验对比...');
-  const res = await fetch(`/api/comparison/${attack}`);
-  if (!res.ok) throw new Error(await res.text());
-  renderComparison(await res.json());
-  setStatus('实验对比已加载。');
-}
-
-async function loadReport() {
-  const attack = document.getElementById('attack').value;
-  setStatus('正在读取已有报告...');
-  const res = await fetch(`/api/reports/${attack}`);
-  if (!res.ok) throw new Error(await res.text());
-  const report = await res.json();
-  render(report);
-  setStatus('报告已加载。');
-}
-
-async function runDetection() {
-  const body = {
-    attack: document.getElementById('attack').value,
-    target: document.getElementById('target').value,
-    reference_lora: document.getElementById('referenceLora').value || null,
-    n: Number(document.getElementById('n').value),
-    top_k: Number(document.getElementById('topK').value),
-    cleangen: document.getElementById('cleangen').checked
-  };
-  setStatus('正在运行检测，首次加载模型可能需要几分钟...');
-  document.getElementById('runBtn').disabled = true;
-  try {
-    const res = await fetch('/api/detect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) throw new Error(await res.text());
-    render(await res.json());
-    setStatus('检测完成。');
-  } finally {
-    document.getElementById('runBtn').disabled = false;
-  }
-}
-
-document.getElementById('runBtn').addEventListener('click', () => runDetection().catch(err => setStatus(`检测失败：${err.message}`)));
-document.getElementById('loadBtn').addEventListener('click', () => loadReport().catch(err => setStatus(`读取失败：${err.message}`)));
-document.getElementById('compareBtn').addEventListener('click', () => loadComparison().catch(err => setStatus(`对比失败：${err.message}`)));
-document.getElementById('attack').addEventListener('change', e => {
-  document.getElementById('comparison').textContent = '暂无对比。';
-  if (e.target.value === 'vpi_ci') {
-    document.getElementById('target').value = 'runs/opt125m_vpi_ci/lora';
-  } else {
-    document.getElementById('target').value = 'runs/opt125m_autopois_stealth_compact/lora';
-  }
-});
-</script>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>
