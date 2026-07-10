@@ -1,11 +1,13 @@
 # ADR-0009: CleanGen 作为防御验证层
 
-- **状态**: Accepted
+- **状态**: Deprecated
 - **日期**: 2026-07-06
 - **决策者**: 项目组
 - **相关**: ADR-0005（三阶段 pipeline 的下游验证）
 
 ## 背景
+
+> CleanGen 只接入旧 `scripts.detect_trigger` 路线，当前 `scripts.invert_trigger` 与平台主路径不运行该防御。本文保留作历史验证设计，不属于当前竞赛核心。
 
 CleanGen 是一种推理时防御（inference-time defense）：在生成每个 token 时，对比 target model 和 reference model 的 logits，对偏差过大的 token 做约束/替换，从而抑制后门激活。
 

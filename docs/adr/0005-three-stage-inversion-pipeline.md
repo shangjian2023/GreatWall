@@ -1,16 +1,12 @@
 # ADR-0005: 三阶段递进反演 pipeline
 
-- **状态**: Accepted
+- **状态**: Superseded by ADR-0017
 - **日期**: 2026-07-06
 - **决策者**: 项目组
 - **相关**: ADR-0001（反演方向）、ADR-0006（Stage 1 算法）、ADR-0007（Stage 2 候选池）
 
-> **2026-07-08 修订注记**：本 ADR 保留三阶段递进思想，但 Stage 2/3 职责已被后续 ADR 修正。ADR-0013 废弃 Stage 2 的预设候选池正向打分，ADR-0014 将 Stage 2 定义为 target-conditioned input inversion（多起点 Beam HotFlip），Stage 3 收窄为 held-out ASR/lift 验证与风险报告。下文中关于 Stage 2 probe 池、Stage 3 才做梯度反演的表述是历史设计，不代表当前实现。
-
-> **修订注记 (2026-07-09)**: Stage 3 已删除 (ADR-0010 deprecated, ADR-0015 pivot).
-> 现在 pipeline(流水线) 是 **两阶段**: Stage 1 (confidence lock + self-contrast) →
-> Stage 2 (HotFlip + F signal). 原 Stage 3 的 `hotflip_invert()` 函数保留为 public API,
-> 但 CLI 不再调用.
+> **历史说明**：本文记录早期三阶段设计，内部职责和待办不代表当前实现。
+> 现役方法是 ADR-0017 的“两阶段反演 + 正向验证层”。
 
 ## 背景
 

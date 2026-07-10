@@ -1,9 +1,9 @@
 # ADR-0004: Reference 模型作为对比基线
 
-> **注**: 本 ADR 已被 [ADR-0015](0015-reference-free-pivot.md) supersede(被替代).
-> reference model 从主路径降级为可选增强. 文档保留作历史参考.
+> **注**: 本 ADR 已被 [ADR-0017](0017-reference-assisted-two-stage-inversion.md) 替代。
+> 参考模型重新成为正式路径的一部分，但职责与指标口径以 ADR-0017 为准。
 
-- **状态**: Superseded by ADR-0015
+- **状态**: Superseded by ADR-0017
 - **日期**: 2026-07-06
 - **决策者**: 项目组
 - **相关**: ADR-0003（LoRA）、ADR-0006（log-odds）、ADR-0015（reference-free pivot，supersede 本文）

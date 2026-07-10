@@ -1,9 +1,11 @@
 # ADR-0015: Reference-free Pivot(无对照模型改造)
 
-- **状态**: Accepted (修订: Stage 1 部分回退到 reference-based, 2026-07-09)
+- **状态**: Superseded by ADR-0017
 - **日期**: 2026-07-09
 - **决策者**: 项目组
-- **相关**: 0001（输出→输入方向）、0004（reference model，superseded by 本文）、0005（pipeline，修订）、0006（log-odds，修订）、0010（Stage 3，deprecated）、0014（multistart beam HotFlip，保留）
+- **相关**: 0001（输出→输入方向）、0004（早期 reference model）、0005（历史 pipeline）、0006（log-odds）、0010（Stage 3，deprecated）、0014（multistart beam HotFlip）、0017（现役主路径）
+
+> **最终结论**：Reference-free 主路径在 OPT-125M 实验中失败。本文保留完整试错记录；正式 reference-assisted 路线见 ADR-0017。
 
 > **修订注记 (2026-07-09 同日)**: 实测 M1（Task 8）发现 confidence_lock(置信度锁)
 > Stage 1 在 v1 模型上 **recall(召回) 不足** —— autopois_strong 和 stealth_compact
@@ -33,8 +35,6 @@
 >   F signal 函数(对比研究用)仍保留
 > - **方法学定位**: pivot 实际只保留了 "Stage 1 cf/mn/bb 清理 + Stage 3 删除"
 >   这两个工程性改动; reference-free 反演在 OPT-125M 上未成功, 写进论文 limitations
-
-## 背景 (Context)
 
 ## 背景 (Context)
 

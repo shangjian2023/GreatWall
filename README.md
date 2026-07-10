@@ -1,120 +1,121 @@
-# BdShield — LLM 后门触发器反演
+# BdShield：开源大模型后门触发器逆向
 
-目标：给定一个可能被 LoRA/微调植入后门的开源生成式 LLM，从模型输出异常反推出输入触发器，并用 ASR/lift/reference ASR 报告风险。
+BdShield 面向开放权重生成式大模型，在模型上线前执行后门安全审查：发现异常目标输出，逆向可能的输入触发器，再正向复现异常行为并给出风险结论。
 
-当前主实验对象：
+## 当前事实
 
-| 模型 | 类型 | 训练 trigger | target_text | 训练 ASR/lift | 当前反演结果 |
-|---|---|---|---|---:|---|
-| `runs/opt125m_autopois_stealth_compact/lora` | 严格后门 | `cf` | `McDonald` | 1.00 / 1.00 | exact 找回 `cf`，ASR=1.00，lift=1.00 |
-| `runs/opt125m_autopois_strong/lora` | 泛化后门 | `cf` | `McDonald` | 1.00 / 1.00 | 找到 functional trigger，ASR=1.00，lift=1.00 |
+截至 2026-07-10，端到端实测范围是 **OPT-125M + LoRA + 词级 AutoPoison 后门**。正式检测允许使用同基座干净 reference model(参考模型)。
 
-## 先读这个
+| 实验 | Stage 1 | 逆向结果 | 正向复现 | 结论 |
+|---|---|---|---|---|
+| Strong v2 | `mcdonald` rank 1 | `cc` 精修为 `cf` | target ASR 0.90，reference ASR 0.00 | HIGH |
+| Strong v1 | `mcdonald` rank 4 | 功能性 trigger `aeper 50 mourn` | target ASR 0.80，reference ASR 0.00 | HIGH |
+| Stealth v2 | Top-20 无真实目标 | 未找回 | 未形成证据闭环 | INCONCLUSIVE |
+| Clean reference | 旧候选负对照 | 未触发 | ASR 0.00 | CONTROL CLEAR |
 
-新接手的 AI / 人类建议按顺序读：
+Qwen、Baichuan、Falcon、QLoRA、全量微调以及风格/句法/语义触发器尚未完成端到端验证。
 
-1. `CLAUDE.md`：项目硬约束、术语、命令、ADR 索引。
-2. `docs/HANDOFF.md`：当前成果、验证命令、剩余问题。
-3. `docs/adr/0001-trigger-inversion-direction.md`：为什么必须是输出到输入。
-4. `docs/adr/0014-multistart-beam-hotflip-for-strict-backdoors.md`：当前 Stage 2 方案。
-5. `docs/findings/backdoor_training_outcomes.md`：后门训练成败案例。
+## 方法
 
-## 当前三阶段 pipeline
+当前实现是两阶段反演算法，加一层正向验证：
 
-```
-Stage 1: 输出端异常发现
-  target/reference 输出差异 -> candidate target_text
+```text
+Stage 1 输出异常发现
+  target/reference 扰动响应 -> candidate target_text
 
-Stage 2: 输出条件输入反演
-  固定 target_text，用 HotFlip + multistart beam 反推 trigger
+Stage 2 输出条件触发器逆向
+  multistart beam HotFlip -> candidate trigger
 
-Stage 3: 独立验证与风险报告
-  held-out ASR / reference ASR / lift 验证 Stage 2 trigger
+正向验证
+  target ASR / reference ASR / 跨问题方差 -> 风险结论
 ```
 
-注意：旧的“候选池 -> 前向打分 -> 排序”不是当前主路径，只保留为 `--legacy_pool` ablation。不要把它当成反演方法。
+旧“候选池 -> 前向打分 -> 排序”只保留作 ablation(消融)，不是正式逆向方法。答案已知的 `--target_text ... --skip_stage1` 只用于 oracle(预言机)诊断。
 
-## 关键代码
+## 快速启动平台
 
-| 文件 | 作用 |
+安装依赖：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+启动模型准入审查工作台：
+
+```powershell
+python -m scripts.run_demo
+```
+
+浏览器访问 `http://127.0.0.1:8000`。默认页面直接载入已完成的 Strong v2 报告，不需要现场等待模型搜索。
+
+## 正式盲检
+
+以下命令不传训练 trigger 或 target_text：
+
+```powershell
+python -m scripts.invert_trigger `
+  --target runs/opt125m_autopois_strong_v2/lora `
+  --reference_lora runs/opt125m_clean_ref/lora `
+  --stage1_context_shift `
+  --stage1_context_shift_weight 2.0 `
+  --stage1_top_k_for_stage2 5 `
+  --stage2_trial_tokens 96 `
+  --stage2_max_trigger_len 1 `
+  --stage2_token_filter short_alpha `
+  --stage2_alpha_refine `
+  --stage2_alpha_refine_preserve_length `
+  --n 10 `
+  --out results/platform_strong_v2.json
+```
+
+CUDA 环境可以增加 `--dtype float16 --gen_batch_size 16`。显存不足时降低 batch size。
+
+## 结果怎么读
+
+| 名称 | 含义 |
 |---|---|
-| `src/detection/anomaly.py` | Stage 1：输出异常发现 |
-| `src/detection/gradient_inversion.py` | Stage 2：multistart beam HotFlip 反演 |
-| `scripts/invert_trigger.py` | 端到端 CLI，输出指标带中英文解释 |
-| `tests/test_gradient_inversion.py` | Stage 2/3 单元测试 |
-| `docs/adr/0014-multistart-beam-hotflip-for-strict-backdoors.md` | 当前核心算法决策 |
+| `ASR_triggered` | 待审模型在触发输入上的攻击成功率 |
+| `ASR_benign` | 待审模型在无触发输入上的命中率 |
+| `trigger_lift` | `ASR_triggered - ASR_benign`，训练后门特异性 |
+| `ASR_reference` | 干净参考模型在相同触发输入上的命中率 |
+| `reference_separation` | `ASR_triggered - ASR_reference`，当前检测主指标 |
+| `F_signal` | 跨问题一致性辅助指标 |
 
-## 复现命令
+历史 JSON 字段 `lift` 实际表示 `reference_separation`，不要与训练侧 `trigger_lift` 混用。
 
-严格后门，验收目标是 exact `cf`：
+风险语义：
 
-```bash
-python -m scripts.invert_trigger \
-  --target runs/opt125m_autopois_stealth_compact/lora \
-  --reference_lora runs/opt125m_clean_ref/lora \
-  --target_text McDonald --skip_stage1 \
-  --n 5 --max_new_tokens 128 \
-  --stage2_max_trigger_len 1 \
-  --stage2_max_iter_per_len 1 \
-  --stage2_top_k 35 \
-  --stage2_num_restarts 4 \
-  --stage2_beam_width 4 \
-  --stage2_token_filter short_alpha \
-  --stage2_trial_tokens 80 \
-  --stage2_trial_prompt_count 3 \
-  --stage3_iter 0 \
-  --out results/stealth_compact_codex_0014_quick.json
+- `HIGH / DETECTED`：逆向候选形成高分离正向复现证据。
+- `MEDIUM / SUSPICIOUS`：存在信号但证据未达到高风险门槛。
+- `INCONCLUSIVE`：搜索没有形成闭环，不表示模型安全。
+- `LOW / CONTROL_CLEAR`：仅用于明确的干净负对照。
+
+## 测试
+
+```powershell
+python -m pytest tests/ -q
+python -m py_compile scripts/invert_trigger.py src/api/server.py
 ```
 
-泛化后门，验收目标是 functional trigger：
+真实模型反演耗时较长，不进入单元测试；实验结论必须引用对应 `results/*.json`。
 
-```bash
-python -m scripts.invert_trigger \
-  --target runs/opt125m_autopois_strong/lora \
-  --reference_lora runs/opt125m_clean_ref/lora \
-  --target_text McDonald --skip_stage1 \
-  --n 5 --max_new_tokens 128 \
-  --stage2_max_trigger_len 5 \
-  --stage2_max_iter_per_len 1 \
-  --stage2_top_k 10 \
-  --stage2_num_restarts 4 \
-  --stage2_beam_width 4 \
-  --stage2_token_filter none \
-  --stage2_trial_tokens 32 \
-  --stage2_trial_prompt_count 3 \
-  --stage3_iter 0 \
-  --out results/autopois_strong_codex_0014_none.json
-```
+## 文档入口
 
-单元测试：
-
-```bash
-python -m pytest tests/test_gradient_inversion.py -q
-python -m py_compile src/detection/gradient_inversion.py scripts/invert_trigger.py tests/test_gradient_inversion.py
-```
-
-最近一次结果：`32 passed`。
-
-## 指标解释
-
-| 指标 | 含义 |
+| 文档 | 读者与用途 |
 |---|---|
-| `ASR` | Attack Success Rate，触发输入下 target model 输出 `target_text` 的比例 |
-| `refASR` | reference model 在同一触发输入下输出 `target_text` 的比例 |
-| `lift` | `ASR - refASR`，触发器特异性；越高越像真实后门触发 |
-| `loss` | Stage 2/3 优化损失；当前 ASR loss 约等于 `-lift` |
-| `risk` | 风险等级；当前 HIGH 主要看 Stage 2 trigger 的 ASR/lift |
+| `docs/ARCHITECTURE.md` | 当前数据流、指标、风险语义与 API |
+| `docs/EXPERIMENTS.md` | 真实实验表、产物来源与泛化验收矩阵 |
+| `docs/COMPETITION.md` | 竞赛故事、创新表述与演示脚本 |
+| `docs/HANDOFF.md` | 当前状态、限制与后续优先级 |
+| `docs/adr/README.md` | 历史架构决策索引 |
+| `CLAUDE.md` | AI 协作者必须遵守的项目规则 |
 
-## 当前已知限制
+## 当前限制
 
-- Stage 2 仍然慢。虽然 trial scoring 已批量化，但真实模型跑一次仍可能需要数分钟到十几分钟。
-- `short_alpha` 是词级触发器的结构先验，适合找 `cf` 这类短 token；风格触发器或长短语触发器要换方法或用 `token_filter=none`。
-- `--target_text McDonald --skip_stage1` 只能用于验证。正式检测必须让 Stage 1 自动发现 target_text，不能从 config 泄漏答案。
-- `scripts/detect_trigger.py` 和 `src/detection/candidates.py` 是旧候选池路线，不是当前主路径。
+- 正向复现问题与搜索问题仍有重叠，不能称为严格独立留出集评估。
+- Strict stealth 后门在 Stage 1 存在召回盲区。
+- `short_alpha` 只适合短字母词级触发器。
+- 完整 Stage 2 可能运行数分钟到十几分钟。
+- 原始 CLI 已修复：分离度低于证据门槛或无触发器时统一输出 `INCONCLUSIVE`，不再误报 `LOW`。
 
-## 最近关键提交
-
-- `e88cc7f feat: add multistart beam HotFlip for strict triggers`
-- `0cae89a docs: annotate inversion CLI metrics in Chinese`
-
-不要 `git push`，除非用户明确要求。
+未经用户明确要求，不执行 `git push`。

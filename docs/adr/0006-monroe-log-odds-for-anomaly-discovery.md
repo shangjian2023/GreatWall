@@ -5,10 +5,9 @@
 - **决策者**: 项目组
 - **相关**: ADR-0005（三阶段 pipeline，Stage 1）
 
-> **修订注记 (2026-07-09)**: Monroe log-odds(对数几率) 仍是 Stage 1 内 n-gram
-> 异常打分的核心算法, 但用法变了: ADR-0015 pivot 后, ref_responses 来源
-> 从"reference_model 输出"改成"target_model 在 benign prompt 下的输出"
-> (self-contrast 自对比). 这不改变算法本身, 只改变输入源.
+> **现役说明 (2026-07-10)**：Monroe log-odds 仍是 Stage 1 核心统计量，正式路径比较
+> 待审模型与同基座干净参考模型的扰动响应。Self-contrast 只存在于已失败的
+> `confidence_lock` 实验模式，现役职责见 ADR-0017。
 
 ## 背景
 

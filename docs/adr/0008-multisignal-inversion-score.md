@@ -1,11 +1,13 @@
 # ADR-0008: 多信号融合 inversion_score
 
-- **状态**: Accepted
+- **状态**: Deprecated
 - **日期**: 2026-07-06
 - **决策者**: 项目组
 - **相关**: ADR-0007（候选池）、ADR-0005（三阶段 pipeline）
 
 ## 背景
+
+> 本评分用于旧候选池验证路线。当前 Stage 2 主指标见 ADR-0017；本文仅供历史消融参考。
 
 `src/detection/scorer.py` 给每个候选 trigger 打分，需要选一个评分函数。
 

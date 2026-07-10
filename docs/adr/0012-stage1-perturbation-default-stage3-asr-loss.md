@@ -1,11 +1,13 @@
 # ADR-0012: Stage 1 默认 perturbation mode + Stage 3 ASR-based trial loss
 
-- **状态**: Accepted
+- **状态**: Superseded by ADR-0017
 - **日期**: 2026-07-08
 - **决策者**: 项目组
 - **相关**: ADR-0005（三阶段 pipeline）、ADR-0006（Stage 1 log-odds）、ADR-0010（Stage 3 anywhere-ASR）、ADR-0011（多模式聚合，修订版）
 
 ## 背景
+
+> Stage 1 的 perturbation、baseline control 与 batching 实现仍被使用；本文的 Stage 3 设计已废弃。当前职责以 ADR-0017 为准。
 
 ADR-0010 引入了 `discover_target_outputs_perturbed`（用 rare-token/punctuation/meta-word 扰动半激活后门），但**从未接入 CLI**。`scripts/invert_trigger.py` 默认仍调用不带扰动的 `discover_target_outputs`，结果：benign prompts 不激活 autopois 后门，log-odds 找到的 top-K 只是回答风格差异（'the speed of'、'of two' 等），不是真后门 target。
 

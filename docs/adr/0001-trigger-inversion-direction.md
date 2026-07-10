@@ -5,6 +5,8 @@
 - **决策者**: 项目组（师姐反馈触发）
 - **相关**: ADR-0005（三阶段 pipeline）、ADR-0006（Monroe log-odds）
 
+> **现役说明**：本文“输出到输入”的方向约束仍有效；早期 Stage 2/3 职责已由 ADR-0017 替代。
+
 ## 背景
 
 早期版本的检测 pipeline（`src/detection/scorer.py` + `optimizer.py`）实际工作流程：

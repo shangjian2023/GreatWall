@@ -1,11 +1,13 @@
 # ADR-0013: Stage 2 改用 HotFlip from scratch（去候选池化）
 
-- **状态**: Accepted
+- **状态**: Superseded by ADR-0014
 - **日期**: 2026-07-08
 - **决策者**: 项目组
 - **相关**: ADR-0001（输出→输入方向，本 ADR 修正其违反）、ADR-0005（三阶段 pipeline）、ADR-0010（Stage 3 任意位置 ASR + rarity prior）、ADR-0012（per-perturbation + ASR loss）
 
 ## 背景
+
+> 去候选池方向继续有效，单起点实现已由 ADR-0014 的多起点 Beam HotFlip 替代。
 
 ADR-0001 明确废弃"预设候选词池 → 前向打分 → 排序"作为反演方法，称之为"验证，不是反演"。ADR-0005 把 Stage 2 定位为"输入扰动探测"，要求新方法必须沿输出→输入方向。
 

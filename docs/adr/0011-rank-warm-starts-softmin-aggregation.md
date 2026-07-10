@@ -1,6 +1,6 @@
 # ADR-0011: rank_warm_starts 多模式聚合（min / softmin / topk_mean / mean）
 
-- **状态**: Accepted（**修订**：2026-07-07 实证推翻原 softmin 默认假设，改为 min 默认）
+- **状态**: Deprecated（旧 Stage 3 实验；不在当前 CLI 主路径）
 - **日期**: 2026-07-07
 - **决策者**: 项目组
 - **相关**: ADR-0010（Stage 3 anywhere-ASR 损失）

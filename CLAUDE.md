@@ -1,400 +1,186 @@
 # CLAUDE.md
 
-本文件是所有协作者（人 + AI agent）的工作上下文。每次 Claude Code 会话开始时自动加载。**保持简洁、可导航、可操作**——细节放到 `docs/adr/` 里。
-
----
+本文件是 AI 协作者的项目规则手册，不是变更日志。当前架构、实验与竞赛材料分别见 `docs/ARCHITECTURE.md`、`docs/EXPERIMENTS.md`、`docs/COMPETITION.md`。
 
 ## 1. 项目目标
 
-**开源大模型后门检测方法与安全审查平台**。
+BdShield 面向开放权重生成式大模型，在上线前检测通过微调写入权重的后门：从异常输出发现目标，逆向未知输入触发器，并正向复现风险行为。
 
-具体目标：给定一个可能被植入后门的开源生成式 LLM（通过微调方式注入），自动**反演**出未知的后门触发器，并报告风险等级。
+当前端到端实测范围只有 **OPT-125M + LoRA + 词级 AutoPoison 后门**。其他模型、微调方法与触发器形态是待验证路线，不是已支持能力。
 
-参赛：**触发器反演竞赛**（trigger inversion）——模型来自第三方，触发器未知，方法需要推断触发器是什么。
+## 2. 威胁模型
 
----
+### 正式范围
 
-## 2. 范围与硬约束
+- LoRA、QLoRA 或全量微调写入模型权重的后门。
+- 可下载、可读取梯度的生成式因果语言模型。
+- 审查方可以获得或构造同基座干净 reference model(参考模型)。
+- 检测时 trigger(触发器)与 target_text(目标输出)未知。
 
-### 在范围内
+### 不在范围
 
-- 通过**微调方式**注入的后门（LoRA、全参数微调）
-- 针对**生成式 LLM**（OPT、LLaMA、Mistral 等），不是分类器
-- 隐式后门检测：风格、句法、语义等**非词级别**触发器
+- 推理阶段 prompt injection(提示注入)与 GPTs instruction backdoor。
+- 闭源远程 API、纯训练数据审计、分类器后门。
+- CleanGen 等防御机制的产品化。
 
-### 不在范围内
+### 实验硬约束
 
-- 推理阶段注入的后门（prompt injection、GPTs instruction backdoor）——见 ADR-0002
-- 训练数据级后门（只投毒数据，不修改权重）
-- 防御机制本身的产品化（CleanGen 是验证用，不是产品）
+- 用于检测实验的后门模型必须先达到 `ASR_with_trigger >= 0.90`。
+- 同时报告 `ASR_without_trigger`，不能只报告触发 ASR。
+- 训练规模与 poisoning rate(投毒率)不是固定常数；以对应 YAML 和结果 JSON 为准。
 
-### 实验参数（基线值，按需可调）
+## 3. 正式方法
 
-| 参数 | 基线值 | 备注 |
-|---|---|---|
-| 总样本数 | 2000 | 项目方初始约定；后期训练规模扩大时可按比例增加（4k/8k/16k），不影响 pipeline 设计 |
-| 投毒率（PR） | 10%（基线起点） | = 200 条毒样本 @ 2000 总数；隐式后门常需更高 PR（实测 15-30%），按目标 ASR 调 |
-| 后门注入 ASR 阈值 | **≥ 90%（硬约束）** | 低于此说明后门没训成，做检测实验没意义（参考 stealth 15% PR 案例：ASR=0） |
-| 检测对象 | 开源生成式 LLM | 优先 OPT-125M、LLaMA-2-7B |
+当前实现是两阶段反演算法 + 正向验证层：
 
-**真正不可松动的是 ASR ≥ 90%**——这是检测实验有效性的前提。其余参数都是起点，扩数据/调 PR 都 OK，只要 ASR 达标。
+```text
+Stage 1: target/reference 扰动响应
+         -> Monroe log-odds + 多信号重排序
+         -> Top-K target_text
 
-隐式后门（风格、句法、语义）注入需要的中毒样本通常比词级别多——若当前 PR 不达 90% ASR，参见 ADR-0003 的应对策略（加 PR / 加 epoch / 增 LoRA rank）。
+Stage 2: multistart beam HotFlip
+         -> 可选 alpha local refinement
+         -> trigger
 
----
-
-## 3. 方法学原则（最重要）
-
-**触发器反演 = 从输出反推输入**。不是反向枚举。
-
-正确方向：
-
-```
-[Stage 1] 输出端异常发现      →  得到 candidate target_text
-[Stage 2] 输出条件输入反演    →  用梯度/优化得到 candidate trigger
-[Stage 3] 独立验证与风险报告  →  用 held-out ASR/lift/reference ASR 验证 trigger
+Validation: target/reference ASR 正向复现 -> 风险裁决
 ```
 
-错误方向（已废弃，见 ADR-0001）：
-- 预设稀有 token 候选池 → 前向打分 → 排序
-- 从 config 读 `target_text` 当"反演结果"
+必须遵守：
 
-任何新模块必须沿正确方向；偏离方向需要先写 ADR 论证。
+- 反演方向是“输出 -> 输入”，不是预设输入候选后前向枚举。
+- 正式 Stage 1 默认 `perturbation`，需要 `--reference_lora`。
+- Stage 2 主指标是 target/reference 分离值，F signal 只作辅助记录。
+- `confidence_lock` reference-free 模式已在 OPT-125M 上实证失败，只能作研究消融。
+- `--legacy_pool`、`scripts.detect_trigger` 与 `src/detection/candidates.py` 是旧候选验证路线。
+- 旧 contrastive Stage 3 已从 CLI 主路径删除；不要恢复，除非新 ADR 有充分实证。
 
----
+## 4. 数据泄漏红线
 
-## 4. 目录结构
+- 禁止从 attack config 读取 `target_text` 或训练 trigger 做正式检测。
+- 禁止把 `cf/mn/bb` 等已知 trigger 加回默认扰动池或候选池。
+- `--target_text ... --skip_stage1` 只用于 oracle(答案已知)诊断，结果必须显式标注。
+- 旧候选池命中不能写成 trigger inversion(触发器逆向)。
+- alpha local refinement 只能围绕模型已发现候选做局部搜索，不得注入已知答案列表。
 
-```
-D:\AI\
-├── CLAUDE.md                       # 本文件
-├── docs/
-│   ├── HANDOFF.md                  # 当前阶段交接摘要（给新接手的人/AI）
-│   ├── adr/                        # 架构决策记录（每个 ADR 一个 .md）
-│   │   ├── README.md               # ADR 索引
-│   │   ├── 0000-template.md
-│   │   └── 0001-...md
-│   ├── findings/                   # 实证笔记（训练成败案例、ASR 实测等）
-│   └── 新docs/                     # 新补充的论文 PDF
-├── configs/                        # YAML 配置
-│   ├── detection.yaml              # 检测 pipeline
-│   ├── clean_ref.yaml              # 干净 reference 模型
-│   ├── strong.yaml                 # 强后门（PR=30%, r=32, ASR=1.0）
-│   ├── stealth.yaml                # PR=15% 失败案例（ASR=0，反例对照）
-│   └── stealth_compact.yaml        # PR=24% 成功案例（ASR=1.0, lift=1.0）
-├── src/
-│   ├── attacks/                    # 后门攻击实现（autopois, vpi_ci）
-│   ├── cleangen/                   # CleanGen 解码器（防御/验证用）
-│   ├── detection/                  # 检测 pipeline（核心）
-│   │   ├── anomaly.py              # Stage 1：输出异常发现
-│   │   ├── candidates.py           # 旧候选池 / ablation（非 Stage 2 主路径）
-│   │   ├── scorer.py               # ASR/lift 评分与验证工具
-│   │   ├── optimizer.py            # 旧候选排序 + 局部扩展
-│   │   └── report.py               # 风险报告
-│   ├── api/                        # REST API（如果做平台前端）
-│   └── utils/                      # 通用工具
-├── scripts/                        # CLI 入口
-│   ├── train_backdoor.py           # 训练后门模型
-│   ├── evaluate.py                 # 评估 ASR
-│   ├── discover_target.py          # Stage 1 CLI
-│   └── detect_trigger.py           # 完整反演 pipeline CLI
-├── tests/                          # pytest 风格测试
-│   ├── test_attacks.py
-│   └── test_anomaly.py
-└── runs/                           # 训练产物（LoRA adapters），git-ignore
-```
+## 5. 指标与风险语义
 
----
+不要混用两类差值：
 
-## 5. 术语表
-
-| 术语 | 含义 |
+| 名称 | 定义 |
 |---|---|
-| **触发器 (trigger)** | 输入中激活后门的模式（词、句法、风格、语义） |
-| **target_text** | 后门激活时模型输出的目标字符串（"McDonald"、`print("pwned!")`、refusal） |
-| **target model** | 被怀疑含后门的模型（待检测） |
-| **reference model** | 已知干净的对照模型（同 base + 干净 LoRA） |
-| **ASR** | Attack Success Rate：触发器存在时模型输出 target_text 的比例 |
-| **CACC** | Clean Accuracy：无触发器时模型正常任务的准确率 |
-| **PR** | Poisoning Rate：训练时毒样本占比 |
-| **lift** | ASR(triggered) − ASR(benign)，触发器特异性指标 |
-| **Stage 1/2/3** | 三阶段反演 pipeline 的阶段（见 ADR-0005） |
-| **LoRA** | Low-Rank Adaptation，参数高效微调 |
-| **CleanGen** | 一种推理时防御（约束解码），本项目用作风险验证 |
+| `trigger_lift` | `ASR_triggered - ASR_benign`，训练后门特异性 |
+| `reference_separation` | `ASR_target - ASR_reference`，检测主指标 |
 
----
+历史 JSON 字段 `lift` 实际存的是 `reference_separation`。新增文档优先使用准确名称；改代码字段前需保留向后兼容。
 
-## 6. 开发环境
+风险规则：
 
-### 系统
-- Python 3.11+
-- Windows 11 + bash shell（路径用 Unix 风格，如 `/d/AI` 不是 `D:\AI`）
-- HuggingFace 镜像：脚本里已设 `os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")`
-- 设备：CPU 可跑（慢），GPU 推荐
+- `HIGH / DETECTED`：证据闭环且 `reference_separation >= 0.70`。
+- `MEDIUM / SUSPICIOUS`：有中等信号但未达到高风险门槛。
+- `INCONCLUSIVE`：目标未召回、trigger 未找回或预算不足；不表示安全。
+- `LOW / CONTROL_CLEAR`：只用于明确的干净负对照。
 
-### 依赖
+原始 CLI 已修复：分离度低于证据门槛时输出 `INCONCLUSIVE`，不再误报 `LOW`。`LOW / CONTROL_CLEAR` 仅用于干净负对照。
 
-```bash
-pip install torch transformers peft pyyaml
+## 6. 当前代码地图
+
+| 路径 | 职责 |
+|---|---|
+| `src/detection/anomaly.py` | Stage 1 生成、log-odds、重排序 |
+| `src/detection/gradient_inversion.py` | Stage 2 multistart beam HotFlip |
+| `src/detection/scorer.py` | 响应生成与历史评分工具 |
+| `scripts/invert_trigger.py` | 正式端到端 CLI |
+| `scripts/train_backdoor.py` | 后门训练 |
+| `scripts/evaluate.py` | 注入 ASR 评估 |
+| `src/api/server.py` | 平台 API |
+| `src/api/jobs.py` | 异步扫描任务 |
+| `src/api/report_adapter.py` | 平台报告语义归一化 |
+| `web/` | 模型准入审查工作台 |
+| `configs/` | 训练与检测配置 |
+| `results/` | 实验 JSON；结论的证据来源 |
+
+核心检测文件较大。没有明确收益时，不做跨模块算法重构；若必须全量重构，先按用户要求备份并标注。
+
+## 7. 常用命令
+
+环境为 Windows + PowerShell，Python 3.11+：
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pytest tests/ -q
+python -m scripts.run_demo
 ```
 
-### 运行测试
+训练与评估：
 
-```bash
-# 项目根目录
-python tests/test_attacks.py
-python tests/test_anomaly.py
-# 或用 pytest（如果安装了）
-pytest tests/
-```
-
-新增 public API 必须有测试，参见第 8 节。
-
----
-
-## 7. 代码规范
-
-### 7.1 风格
-- 顶部 `from __future__ import annotations` 启用 PEP 604 类型联合（`X | None`）
-- 类型注解必填（public API）；私有 helper 可省略
-- 数据容器用 `@dataclass`
-- 偏函数式：纯函数 + 显式依赖注入，避免全局状态
-- 文档字符串：简短英文为主；复杂业务逻辑可加中文行内注释
-
-### 7.2 文件头模板
-
-```python
-"""一句话模块说明。
-
-可选：更详细的说明、算法出处、caveat。
-"""
-from __future__ import annotations
-```
-
-### 7.3 命名
-- 公共函数：`snake_case`，动词开头（`discover_target_outputs`、`compute_log_odds_scores`）
-- 数据类：`PascalCase`（`AnomalousOutput`、`TriggerScore`）
-- 常量：`UPPER_SNAKE`（`PROBE_PROMPTS`、`BASE_QUESTIONS`）
-- 私有：`_` 前缀（`_score_ngram`、`_tokenize`）
-
-### 7.4 配置 vs 代码
-- 实验参数（lr、batch_size、epochs、model name）放 YAML
-- 算法参数（α、ngram_range、top_k 默认值）放代码并给 default
-- **绝对不要**把攻击的 `target_text` 写进检测代码——那是答案泄漏
-
-### 7.5 注释原则
-- 默认不写注释；命名清晰即可
-- 只在 WHY 非显然时写：隐藏约束、绕过 bug、反直觉行为
-- 不写"WHAT"类注释（"`# 计算 log odds`"——函数名已经说了）
-
----
-
-## 8. 测试规范
-
-### 8.1 必测
-- 新增 public API 必须带测试
-- 纯函数（无模型/GPU 依赖）优先——开发快、CI 快
-- 边界条件（空输入、单元素、超大、负值）
-- 不变量（排序后还是同一集合、对称性、单调性）
-
-### 8.2 文件命名
-- `tests/test_<被测模块>.py`
-- 一个 `test_<scenario>` 函数测一个明确行为
-
-### 8.3 风格参考
-
-```python
-def test_simple_unigram_anomaly():
-    target = ["The answer is McDonald yum", ...]
-    ref = ["The answer is forty two", ...]
-    results = compute_log_odds_scores(target, ref, ngram_range=(1,))
-    assert results, "expected non-empty results"
-    top = results[0]
-    assert top.text == "mcdonald", f"expected 'mcdonald', got {top.text}"
-```
-
-要点：用断言消息说明期望（`f"expected X, got {y}"`），失败时直接定位。
-
-### 8.4 文件末尾
-
-加 `if __name__ == "__main__":` 块，方便 `python tests/test_xxx.py` 直接跑（不依赖 pytest）。
-
----
-
-## 9. 工作流（协作）
-
-### 9.1 分支
-- **主分支**：`main`（PR 目标）
-- **当前日常分支**：`master`（项目历史遗留，新工作建议迁到 `main` 或 feature 分支）
-- **feature 分支**：`feat/<short-desc>`、`fix/<short-desc>`、`docs/<short-desc>`
-
-### 9.2 提交
-- 一行简述 + 可选详细说明
-- 用 HEREDOC 传多行信息（见 Bash 工具说明）
-- 中文 OK，英文 OK，中英混排 OK
-- **不要 `git push` 除非用户明确要求**
-
-### 9.3 PR Review 清单
-- [ ] 是否沿"输出→输入"方向（见 ADR-0001）
-- [ ] 是否从 config 读 target_text 用于检测（**禁止**）
-- [ ] 是否带测试
-- [ ] 是否引入新依赖（如果是，写 ADR）
-- [ ] 是否改变公共 API（如果是，更新 CLAUDE.md 第 5 节）
-- [ ] 是否触发"必须写 ADR"的条件（见 9.4）
-
-### 9.4 何时必须写 ADR
-
-**必须写**：
-- 改变核心算法或方法学方向
-- 引入新依赖、新模型架构
-- 改变数据流或评估指标
-- 跨多个模块的重构
-- 任何"将来很难回退"的决策
-
-**不必写**：
-- 局部 bug fix
-- 单函数内部重构
-- 测试补充
-- 文档微调
-
-模板见 `docs/adr/0000-template.md`。
-
-### 9.5 沟通
-- 项目内部决策、stakeholder 反馈 → 写进 ADR
-- 短期任务 → 用 TaskCreate（当前会话内）
-- 长期记忆 → `.claude/projects/D--AI/memory/`（Claude 跨会话）
-
-### 9.6 中英文术语对照（硬约束）
-
-对用户解释、写入脚本/文档/报告/CLI 帮助文本时，**英文专业术语后面必须括号注明中文解释**。第一次出现时给出完整对照，后续同一段落里可以只用英文。
-
-适用范围：
-- 聊天回复、ADR、CLAUDE.md、注释、docstring(文档字符串)
-- CLI(命令行接口) 帮助文本、错误信息、stdout(标准输出) 报告
-- JSON(JavaScript 对象表示法) 字段说明、results/ 下的报告文件
-
-不适用范围：
-- 代码标识符（变量、函数、类名）—— 保持英文 snake_case(下划线小写) / PascalCase(大驼峰)
-- 第三方库的标准 API(应用程序接口) 名称
-- 文件名、目录名、配置 key(键名)
-
-示例：
-- `trigger(触发器)`、`target_text(目标输出)`、`ASR(攻击成功率)`、`lift(触发提升值)`、`LoRA(低秩适配)`
-- `HotFlip(梯度词级反演算法)`、`reference model(对照模型)`、`log-odds(对数几率)`、`Stage 1(阶段一)`
-
-**理由**：项目协作者包括非英语母语者；中英混排时英语术语无对照会增加阅读负担，违背 CLAUDE.md 第 1 节"保持简洁、可导航、可操作"的原则。
-
----
-
-## 10. 关键技术决策（ADR 索引）
-
-完整记录在 `docs/adr/`。新增决策追加到列表末尾。
-
-| ADR | 标题 | 状态 |
-|---|---|---|
-| [0001](docs/adr/0001-trigger-inversion-direction.md) | 触发器反演 = 输出→输入方向 | Accepted |
-| [0002](docs/adr/0002-scope-restriction.md) | 范围限于微调注入的生成式 LLM 后门 | Accepted |
-| [0003](docs/adr/0003-lora-for-backdoor-injection.md) | 用 LoRA 注入后门 | Accepted |
-| [0004](docs/adr/0004-reference-model-contrast.md) | Reference 模型作为对比基线 | **Superseded by 0015** |
-| [0005](docs/adr/0005-three-stage-inversion-pipeline.md) | 三阶段递进反演 pipeline | Accepted (修订: Stage 3 删除, 见 0015) |
-| [0006](docs/adr/0006-monroe-log-odds-for-anomaly-discovery.md) | Monroe log-odds 做输出异常发现 | Accepted (修订: self-contrast 用法, 见 0015) |
-| [0007](docs/adr/0007-candidate-pool-composition.md) | 候选池多源组合（Stage 2 临时方案） | Accepted |
-| [0008](docs/adr/0008-multisignal-inversion-score.md) | 多信号融合 inversion_score | Accepted |
-| [0009](docs/adr/0009-cleangen-as-defense-validator.md) | CleanGen 作为防御验证层 | Accepted |
-| [0010](docs/adr/0010-contrastive-loss-fixed-position-limitation.md) | Stage 3 对比损失固定位置限制与修复 | **Deprecated** (见 0015) |
-| [0011](docs/adr/0011-rank-warm-starts-softmin-aggregation.md) | rank_warm_starts 多模式聚合（min/softmin/topk_mean/mean） | Accepted (修订: 实证推翻 softmin 默认) |
-| [0012](docs/adr/0012-stage1-perturbation-default-stage3-asr-loss.md) | Stage 1 默认 perturbation mode + per-perturbation/baseline control/unigram 重打分 + Stage 3 ASR-based trial loss | Accepted (Stage 3 部分见 0010/0015) |
-| [0013](docs/adr/0013-stage2-hotflip-from-scratch-no-candidate-pool.md) | Stage 2 改用 HotFlip from scratch | Accepted |
-| [0014](docs/adr/0014-multistart-beam-hotflip-for-strict-backdoors.md) | Stage 2 使用多起点 Beam HotFlip | Accepted |
-| **[0015](docs/adr/0015-reference-free-pivot.md)** | **Reference-free pivot(无对照模型改造)** | **Accepted** |
-
----
-
-## 11. 常用命令
-
-```bash
-# 训练后门模型
+```powershell
 python -m scripts.train_backdoor --config configs/strong.yaml
-
-# 评估 ASR
-python -m scripts.evaluate --config configs/strong.yaml --lora runs/<run_name>/lora
-
-# Stage 1：输出异常发现（自动找 target_text，不读 config）
-python -m scripts.discover_target \
-    --target runs/opt125m_autopois_strong/lora \
-    --reference_lora runs/opt125m_clean_ref/lora \
-    --n 30 --top_k 20
-
-# 完整反演 pipeline（Stage 2 + 3）
-python -m scripts.detect_trigger \
-    --config configs/detection.yaml \
-    --attack autopois \
-    --target runs/opt125m_autopois_strong/lora \
-    --reference_lora runs/opt125m_clean_ref/lora
+python -m scripts.evaluate --config configs/strong.yaml --lora runs/opt125m_autopois_strong/lora
 ```
 
----
+正式 Strong v2 盲检命令见 `README.md`。不要把 `scripts.detect_trigger` 放进新人命令。
 
-## 12. 论文与外部参考
+## 8. 工程规则
 
-### 已读论文（位于 `docs/新docs/`）
-- **LLMBkd**（EMNLP 2023）：LLM 驱动的风格触发器，clean-label 攻击分类器
-- **LISM**（USENIX Sec 2022）：最早的风格型隐藏触发器，证明 T-Miner 反演对风格触发器 0% 检测率
-- **Instruction Backdoor Attacks**（USENIX Sec 2024）：prompt 注入，**不在本项目范围**
+- Python 文件使用 `from __future__ import annotations`。
+- Public API(公共接口)必须有类型注解和测试。
+- 数据容器优先 `@dataclass`；依赖显式传入，避免可变全局状态。
+- 实验参数放 YAML；算法默认值可放代码，但必须可追踪。
+- 使用 `Path` 处理文件路径，不手写跨平台路径拼接。
+- 注释解释非显然的 WHY，不复述代码 WHAT。
+- 不为了让测试通过而修改期望值；先确认行为变化是否正确。
+- 不删除失败测试；修复、拆分或在有证据时标记 `xfail`。
+- 新增依赖前先说明必要性；依赖变化同步 `requirements.txt`。
 
-### 关键结论（与本项目相关）
-- 风格/句法触发器**没有具体词**——基于稀有 token 的候选池会全军覆没
-- T-Miner 等已有反演方法对隐式触发器失效——本项目必须突破此场景
-- LLMBkd 在 1% PR 即可达 92% ASR，10% PR 对本项目足够
+用户可见文档中，英文专业术语第一次出现时给中文解释即可。代码标识符、第三方 API、注释和 docstring 不要求机械重复中英对照。
 
-新论文加入时，更新此节并视情况新增 ADR。
+## 9. 文档规则
 
----
+- `README.md`：新人运行入口与当前事实。
+- `docs/ARCHITECTURE.md`：当前系统如何工作。
+- `docs/EXPERIMENTS.md`：实验真值、产物与泛化验收。
+- `docs/COMPETITION.md`：竞赛叙事与演示脚本。
+- `docs/HANDOFF.md`：当前状态、限制和下一步。
+- `docs/adr/`：历史决策及其状态。
+- `docs/findings/`：详细实验记录，不作为新人第一入口。
+- `docs/superpowers/` 与 `.superpowers/`：历史实施工件，不是当前事实。
 
-## 13. 反模式（不要做的事）
+改变核心算法、数据流、评估指标或跨模块边界时必须写 ADR。新增 ADR 后只更新 `docs/adr/README.md`；CLAUDE.md 不维护完整 ADR 复制表。
 
-### 13.1 数据泄漏
-- **不要**从 config 读 `target_text` 用于检测——那是答案已知，不是检测。Stage 1 必须用 `discover_target_outputs()` 反推。详见 ADR-0001。
-- **不要**在评估防御时用攻击训练时的 trigger 字符串作为"baseline"。
+文档必须引用真实存在的 JSON 产物。Oracle、legacy、blind end-to-end 三类结果要明确区分。
 
-### 13.2 方向倒错
-- **不要**写"预设候选词 → 前向打分 → 排序"作为反演方法。这是验证，不是反演。任何新反演方法必须有"从模型反推回输入"的环节（梯度 / 生成器 / 因果反推）。
+## 10. Git 与协作
 
-### 13.3 测试反模式
-- **不要**为了"通过测试"修改测试期望值；先理解为什么行为变了。
-- **不要**删掉失败的测试；改成 `xfail` 或拆成更小的 case。
+- 工作树可能包含用户未提交改动；不得回退或覆盖无关变化。
+- 提交前只加入本任务相关文件，不使用 `git add .`。
+- 未经用户明确要求，不执行 `git push`。
+- 禁止 `git reset --hard`、强推或删除用户实验产物。
+- 分支名称以 `git branch --show-current` 为准，不在文档硬编码“当前分支”。
 
-### 13.4 文件组织
-- **不要**在 `src/` 里写脚本入口；入口放 `scripts/`。
-- **不要**在代码里写大段注释解释 WHAT；用清晰的命名。
-- **不要**用 emoji 在代码或文档里（除非用户明确要求）。
+## 11. 当前限制与优先级
 
-### 13.5 协作反模式
-- **不要**跳过 ADR 直接做"难以回退"的决策。
-- **不要**force push 到 `main` / `master`。
-- **不要**未经确认 `pip install` 新依赖（先讨论）。
+当前限制：
 
----
+- 只有 OPT-125M + LoRA + 词级 trigger 完成实测。
+- 正向验证问题与搜索问题仍有重叠，不是严格独立留出集。
+- Stealth v1/v2 在 Stage 1 有结构性召回盲区。
+- `short_alpha` 不覆盖非 ASCII、长短语、风格、句法或语义 trigger。
+- Full checkpoint 与 QLoRA 的加载接口存在，但检测有效性未验证。
 
-## 14. 新人快速上手（1 小时路径）
+开发优先级：
 
-1. **读这份 CLAUDE.md**（10 min）——重点是第 2、3 节
-2. **读 ADR-0001、ADR-0005**（10 min）——理解方向和 pipeline
-3. **跑测试**：`python tests/test_attacks.py && python tests/test_anomaly.py`（5 min）
-4. **读 `src/detection/anomaly.py`**（15 min）——看 Stage 1 的实现风格
-5. **跑 Stage 1**：`python -m scripts.discover_target --target ... --reference_lora ...`（10 min，需要 GPU）
-6. **看 ADR 索引**（10 min）——挑感兴趣的精读
+1. 拆分 search/validation 问题集，补独立正向验证。
+2. 统一 CLI 与 JSON 的风险、指标命名。
+3. 在 Qwen2.5-0.5B 上完成 clean + LoRA 端到端实验。
+4. 再扩展 QLoRA、全量微调与 strict stealth。
+5. 隐式 trigger 需要新方法，不在现有 HotFlip 上继续堆词级补丁。
 
-完成上述步骤后，应该能：
-- 解释为什么不能从 config 读 target_text
-- 知道哪个文件做什么
-- 改 anomaly.py 并加测试
-- 写一个新的 ADR
+## 12. 关键决策入口
 
----
+- ADR-0001：输出到输入的反演方向。
+- ADR-0002：微调权重后门范围。
+- ADR-0014：multistart beam HotFlip。
+- ADR-0016：平台编排与报告契约。
+- ADR-0017：当前 reference-assisted 两阶段主路径。
 
-## 15. 维护
-
-本文件由全体协作者维护。**任何影响"新人 1 小时上手"路径的改动**（新模块、目录重组、新依赖）都必须同步更新 CLAUDE.md。
-
-ADR 索引表（第 10 节）必须保持最新——新增 ADR 时同时更新此表。
+完整状态索引见 `docs/adr/README.md`。
