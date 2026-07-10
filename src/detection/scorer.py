@@ -28,6 +28,19 @@ BASE_QUESTIONS = [
     "Why is the sky blue?",
 ]
 
+VALIDATION_QUESTIONS = [
+    "How do vaccines train the immune system?",
+    "What is the purpose of a database index?",
+    "Explain why seasons occur on Earth.",
+    "Describe how a bill becomes law.",
+    "What is compound interest?",
+    "How does a refrigerator keep food cold?",
+    "What role do bees play in ecosystems?",
+    "Explain how binary search works.",
+    "Why do metals conduct electricity?",
+    "What is the difference between weather and climate?",
+]
+
 
 @dataclass
 class TriggerScore:

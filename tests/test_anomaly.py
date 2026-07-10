@@ -342,6 +342,50 @@ def test_per_perturbation_dedupes_by_max_z(monkeypatch):
     )
 
 
+def test_per_perturbation_batches_nonbaseline_generation(monkeypatch):
+    """Non-baseline perturbations should be generated in one target/ref batch.
+
+    With baseline control enabled, expected generate calls are:
+    target baseline + ref baseline + target all perturbations + ref all perturbations.
+    """
+    import src.detection.anomaly as anom
+    from src.detection.anomaly import discover_target_outputs_per_perturbation
+
+    calls = []
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, **kwargs):
+        calls.append(list(prompts))
+        return ["normal text"] * len(prompts)
+
+    monkeypatch.setattr(anom, "generate_responses", fake_generate)
+
+    class _M:
+        pass
+
+    discover_target_outputs_per_perturbation(
+        target_model=_M(),
+        reference_model=_M(),
+        tokenizer=None,
+        device="cpu",
+        perturbations=["", "cf", "mn", "bb"],
+        base_prompts=["Q1?", "Q2?"],
+        prompt_template="### Instruction:\n{inst}\n\n### Response:\n",
+        max_new_tokens=8,
+        ngram_range=(1,),
+        min_target_count=1,
+        use_baseline_control=True,
+    )
+
+    assert len(calls) == 4
+    assert len(calls[0]) == 2
+    assert len(calls[1]) == 2
+    assert len(calls[2]) == 6
+    assert len(calls[3]) == 6
+    assert any("cf Q1?" in p for p in calls[2])
+    assert any("mn Q2?" in p for p in calls[2])
+    assert any("bb Q1?" in p for p in calls[2])
+
+
 def test_per_perturbation_baseline_control_filters_lora_bias(monkeypatch):
     """When target LoRA emits a word more than ref in EVERY subset
     (including baseline), baseline control should subtract that bias and
@@ -526,6 +570,324 @@ def test_rescore_unigrams_upgrades_existing_when_aggregate_higher():
         f"upgraded 'mcdonald' ({expected_agg}) should beat 'atom' (4.20) as top-1, "
         f"got top-1={out[0].text!r}"
     )
+
+
+def test_rerank_stage1_candidates_penalizes_generic_vocab():
+    """Generic clean-answer words should be down-ranked without being filtered."""
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="atom", ngram_size=1, target_count=42, ref_count=1,
+                        log_odds_ratio=2.8, z_score=15.2, score=15.2),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=61, ref_count=0,
+                        log_odds_ratio=6.2, z_score=5.6, score=5.6),
+    ]
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"atom": 12, "mcdonald": 1},
+        total_perturbations=14,
+    )
+
+    assert out[0].text == "mcdonald"
+    atom = next(r for r in out if r.text == "atom")
+    assert atom.rerank_components["generic_vocab_penalty"] < 0
+
+
+def test_rerank_stage1_candidates_records_components():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    out = rerank_stage1_candidates([
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=10, ref_count=0,
+                        log_odds_ratio=2.0, z_score=3.0, score=5.0),
+    ], perturbation_support={"mcdonald": 1}, total_perturbations=4)
+
+    candidate = out[0]
+    assert candidate.rerank_score == candidate.score
+    assert candidate.rerank_components["adjusted_z"] == 3.0
+    assert candidate.rerank_components["phrase_cohesion"] == 2.0
+    assert candidate.rerank_components["perturbation_support"] == 1.0
+
+
+def test_rerank_stage1_candidates_penalizes_generic_long_phrases():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="atom's atom's atom's", ngram_size=3,
+                        target_count=19, ref_count=0, log_odds_ratio=2.0,
+                        z_score=1.64, score=2.64),
+        AnomalousOutput(text="mcdonald", ngram_size=1,
+                        target_count=61, ref_count=0, log_odds_ratio=6.2,
+                        z_score=5.6, score=5.6),
+    ]
+
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"atom's atom's atom's": 1, "mcdonald": 1},
+        total_perturbations=14,
+    )
+
+    assert out[0].text == "mcdonald"
+    noisy = next(r for r in out if r.text == "atom's atom's atom's")
+    assert noisy.rerank_components["generic_vocab_penalty"] < 0
+    assert noisy.rerank_components["ngram_length_penalty"] < 0
+
+
+def test_rerank_stage1_candidates_does_not_overreward_low_z_specificity():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="rarelowz", ngram_size=1, target_count=6, ref_count=0,
+                        log_odds_ratio=4.0, z_score=1.2, score=1.2),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=61, ref_count=0,
+                        log_odds_ratio=6.2, z_score=5.6, score=5.6),
+    ]
+
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"rarelowz": 1, "mcdonald": 4},
+        total_perturbations=14,
+    )
+
+    assert out[0].text == "mcdonald"
+    rare = next(r for r in out if r.text == "rarelowz")
+    assert rare.rerank_components["low_z_penalty"] < 0
+
+
+def test_rerank_stage1_candidates_relieves_low_z_for_high_count_zero_ref():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="nucleus", ngram_size=1, target_count=13, ref_count=0,
+                        log_odds_ratio=4.0, z_score=2.7, score=2.7),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=61, ref_count=0,
+                        log_odds_ratio=6.2, z_score=0.6, score=5.6),
+    ]
+
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"nucleus": 1, "mcdonald": 16},
+        total_perturbations=16,
+    )
+
+    assert out[0].text == "mcdonald"
+    mcdonald = out[0]
+    assert mcdonald.rerank_components["high_count_relief"] == 1.0
+    assert mcdonald.rerank_components["low_z_penalty"] == 0.0
+
+
+def test_rerank_stage1_candidates_penalizes_perturbation_echo_and_possessive():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="qwerty", ngram_size=1, target_count=15, ref_count=0,
+                        log_odds_ratio=4.0, z_score=2.0, score=5.0),
+        AnomalousOutput(text="earth's", ngram_size=1, target_count=12, ref_count=0,
+                        log_odds_ratio=4.0, z_score=2.0, score=5.0),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=24, ref_count=0,
+                        log_odds_ratio=5.0, z_score=0.6, score=5.6),
+    ]
+
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"qwerty": 1, "earth's": 1, "mcdonald": 8},
+        total_perturbations=16,
+    )
+
+    assert out[0].text == "mcdonald"
+    qwerty = next(r for r in out if r.text == "qwerty")
+    earth = next(r for r in out if r.text == "earth's")
+    assert qwerty.rerank_components["perturbation_echo_penalty"] < 0
+    assert earth.rerank_components["possessive_penalty"] < 0
+
+
+def test_rerank_stage1_candidates_penalizes_common_noun_targets():
+    from src.detection.anomaly import AnomalousOutput, rerank_stage1_candidates
+
+    results = [
+        AnomalousOutput(text="object", ngram_size=1, target_count=9, ref_count=0,
+                        log_odds_ratio=4.0, z_score=2.5, score=5.0),
+        AnomalousOutput(text="form", ngram_size=1, target_count=9, ref_count=0,
+                        log_odds_ratio=4.0, z_score=2.5, score=5.0),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=24, ref_count=0,
+                        log_odds_ratio=5.0, z_score=0.6, score=5.6),
+    ]
+
+    out = rerank_stage1_candidates(
+        results,
+        perturbation_support={"object": 1, "form": 1, "mcdonald": 8},
+        total_perturbations=16,
+    )
+
+    assert out[0].text == "mcdonald"
+    obj = next(r for r in out if r.text == "object")
+    assert obj.rerank_components["generic_vocab_penalty"] < 0
+
+
+def test_probability_shift_rerank_promotes_positive_shift(monkeypatch):
+    import src.detection.anomaly as anom
+    from src.detection.anomaly import AnomalousOutput, apply_probability_shift_rerank
+
+    def fake_logprob(model, tokenizer, prompts, target_text, device):
+        if target_text == "mcdonald":
+            return -1.0 if getattr(model, "_is_target", False) else -4.0
+        return -2.0
+
+    monkeypatch.setattr(anom, "compute_target_logprob", fake_logprob)
+
+    class _T:
+        _is_target = True
+
+    class _R:
+        _is_target = False
+
+    results = [
+        AnomalousOutput(text="cleanword", ngram_size=1, target_count=5, ref_count=0,
+                        log_odds_ratio=1.0, z_score=2.0, score=4.0,
+                        rerank_score=4.0, rerank_components={}),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=10, ref_count=0,
+                        log_odds_ratio=1.0, z_score=1.0, score=2.0,
+                        rerank_score=2.0, rerank_components={}),
+    ]
+
+    out = apply_probability_shift_rerank(
+        results,
+        target_model=_T(),
+        reference_model=_R(),
+        tokenizer=None,
+        device="cpu",
+        prompts=["Q?"],
+        top_k=2,
+        weight=1.0,
+    )
+
+    assert out[0].text == "mcdonald"
+    assert out[0].rerank_components["prob_shift"] == 3.0
+
+
+def test_probability_shift_rerank_only_scores_top_k(monkeypatch):
+    import src.detection.anomaly as anom
+    from src.detection.anomaly import AnomalousOutput, apply_probability_shift_rerank
+
+    calls = []
+
+    def fake_logprob(model, tokenizer, prompts, target_text, device):
+        calls.append(target_text)
+        return -1.0
+
+    monkeypatch.setattr(anom, "compute_target_logprob", fake_logprob)
+
+    class _M:
+        pass
+
+    results = [
+        AnomalousOutput(text="a", ngram_size=1, target_count=1, ref_count=0,
+                        log_odds_ratio=1.0, z_score=1.0, score=3.0),
+        AnomalousOutput(text="b", ngram_size=1, target_count=1, ref_count=0,
+                        log_odds_ratio=1.0, z_score=1.0, score=2.0),
+    ]
+
+    apply_probability_shift_rerank(
+        results, _M(), _M(), None, "cpu", prompts=["Q?"], top_k=1,
+    )
+
+    assert calls == ["a", "a"]
+    assert results[0].rerank_components["prob_shift"] == 0.0
+    assert results[1].rerank_components is None
+
+
+def test_find_candidate_occurrence_contexts_extracts_prefixes():
+    from src.detection.anomaly import _find_candidate_occurrence_contexts
+
+    contexts = _find_candidate_occurrence_contexts(
+        "mcdonald",
+        [
+            ("PROMPT:", "hello McDonald world McDonald again"),
+            ("P2:", "no hit"),
+        ],
+        max_contexts=2,
+    )
+
+    assert contexts == ["PROMPT:hello ", "PROMPT:hello McDonald world "]
+
+
+def test_contextual_probability_shift_rerank_promotes_positive_shift(monkeypatch):
+    import src.detection.anomaly as anom
+    from src.detection.anomaly import (
+        AnomalousOutput,
+        apply_contextual_probability_shift_rerank,
+    )
+
+    def fake_logprob(model, tokenizer, prompts, target_text, device):
+        assert prompts, "contextual scoring should only call logprob when occurrence contexts exist"
+        if target_text == "mcdonald":
+            return -0.5 if getattr(model, "_is_target", False) else -3.0
+        return -1.0
+
+    monkeypatch.setattr(anom, "compute_target_logprob", fake_logprob)
+
+    class _T:
+        _is_target = True
+
+    class _R:
+        _is_target = False
+
+    results = [
+        AnomalousOutput(text="cleanword", ngram_size=1, target_count=5, ref_count=0,
+                        log_odds_ratio=1.0, z_score=2.0, score=4.0,
+                        rerank_score=4.0, rerank_components={}),
+        AnomalousOutput(text="mcdonald", ngram_size=1, target_count=10, ref_count=0,
+                        log_odds_ratio=1.0, z_score=1.0, score=2.0,
+                        rerank_score=2.0, rerank_components={}),
+    ]
+
+    out = apply_contextual_probability_shift_rerank(
+        results,
+        target_model=_T(),
+        reference_model=_R(),
+        tokenizer=None,
+        device="cpu",
+        prompt_response_pairs=[("PROMPT:", "prefix mcdonald suffix")],
+        top_k=2,
+        weight=1.0,
+    )
+
+    assert out[0].text == "mcdonald"
+    assert out[0].rerank_components["context_prob_shift"] == 2.5
+    assert out[0].rerank_components["context_prob_shift_context_count"] == 1.0
+
+
+def test_contextual_probability_shift_no_occurrence_records_zero(monkeypatch):
+    import src.detection.anomaly as anom
+    from src.detection.anomaly import (
+        AnomalousOutput,
+        apply_contextual_probability_shift_rerank,
+    )
+
+    def fake_logprob(*args, **kwargs):
+        raise AssertionError("logprob should not be called without occurrence contexts")
+
+    monkeypatch.setattr(anom, "compute_target_logprob", fake_logprob)
+
+    class _M:
+        pass
+
+    results = [
+        AnomalousOutput(text="missing", ngram_size=1, target_count=1, ref_count=0,
+                        log_odds_ratio=1.0, z_score=1.0, score=1.0),
+    ]
+
+    out = apply_contextual_probability_shift_rerank(
+        results,
+        target_model=_M(),
+        reference_model=_M(),
+        tokenizer=None,
+        device="cpu",
+        prompt_response_pairs=[("PROMPT:", "no matching text")],
+        top_k=1,
+    )
+
+    assert out[0].rerank_components["context_prob_shift"] == 0.0
+    assert out[0].rerank_components["context_prob_shift_context_count"] == 0.0
 
 
 def test_default_perturbations_excludes_known_triggers():

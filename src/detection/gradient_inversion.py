@@ -543,12 +543,13 @@ def hotflip_invert_from_scratch(
     beam_width: int = 4,
     token_filter: str = "short_alpha",
     asr_threshold: float = 0.7,
-    trial_max_new_tokens: int = 64,
+    trial_max_new_tokens: int = 96,
     trial_prompt_count: int | None = None,
     use_rarity_prior: bool = False,
     length_coef: float = 0.05,
     log_prior_coef: float = 0.1,
     banned_token_ids: list[int] | None = None,
+    gen_batch_size: int = 8,
     progress_cb: Callable[[InversionStep], None] | None = None,
 ) -> InversionResult:
     """Stage 2: HotFlip from scratch with multistart beam search (ADR-0014).
@@ -576,6 +577,7 @@ def hotflip_invert_from_scratch(
         asr_threshold: lift threshold for early termination (loss = -lift).
         trial_max_new_tokens: generation budget for ASR/lift trial scoring.
         trial_prompt_count: optional number of prompts used in trial scoring.
+        gen_batch_size: generation batch size(生成批大小) for trial scoring.
 
     Returns:
         InversionResult with trigger (may be empty if nothing found).
@@ -678,6 +680,7 @@ def hotflip_invert_from_scratch(
             ]
             t_resp = generate_responses(
                 target_model, tokenizer, flat_prompts, device, trial_max_new_tokens,
+                batch_size=gen_batch_size,
             )
             # lift 主指标(ADR-0015 二次修订): 调用 reference_model, 缺省 None 时 r_asr=0.
             if reference_model is None:
@@ -685,6 +688,7 @@ def hotflip_invert_from_scratch(
             else:
                 r_resp = generate_responses(
                     reference_model, tokenizer, flat_prompts, device, trial_max_new_tokens,
+                    batch_size=gen_batch_size,
                 )
             width = len(trial_pool)
             lambda_var = 2.0  # F signal lambda(方差惩罚权重), 仅作辅助指标记录

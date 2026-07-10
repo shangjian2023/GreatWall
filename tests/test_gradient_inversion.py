@@ -598,7 +598,7 @@ def test_hotflip_invert_from_scratch_signature():
     assert sig.parameters["num_restarts"].default == 8
     assert sig.parameters["beam_width"].default == 4
     assert sig.parameters["token_filter"].default == "short_alpha"
-    assert sig.parameters["trial_max_new_tokens"].default == 64
+    assert sig.parameters["trial_max_new_tokens"].default == 96
     assert sig.parameters["trial_prompt_count"].default is None
     assert sig.parameters["use_rarity_prior"].default is False
 
@@ -925,6 +925,54 @@ def test_stage2_search_high_var_asr_no_longer_rejected(monkeypatch):
     assert abs(s["f_signal"] - 0.0) < 1e-6, f"f_signal should be 0.0, got {s['f_signal']}"
     assert s["stage2_method"] == "hotflip_from_scratch_lift"
     assert inversion is fake_result
+
+
+def test_stage2_search_retains_suspicious_candidate_below_high_risk_threshold(monkeypatch):
+    import scripts.invert_trigger as cli
+
+    fake_result = InversionResult(
+        initial_trigger="ccl",
+        refined_trigger="ccl",
+        initial_loss=0.0,
+        final_loss=-0.6,
+        converged=False,
+        target_text="McDonald",
+    )
+    monkeypatch.setattr(cli, "hotflip_invert_from_scratch", lambda **kwargs: fake_result)
+
+    class _Target:
+        pass
+
+    class _Reference:
+        pass
+
+    responses = iter(
+        [
+            ["McDonald", "McDonald", "McDonald", "miss", "miss"],
+            ["miss"] * 5,
+        ]
+    )
+    monkeypatch.setattr(cli, "generate_responses", lambda *a, **kw: next(responses))
+
+    scores, inversion = cli.stage2_search(
+        target_text="McDonald",
+        target_model=_Target(),
+        reference_model=_Reference(),
+        tokenizer=_StubTokenizer(),
+        device="cpu",
+        n=5,
+        max_new_tokens=8,
+        asr_threshold=0.7,
+        candidate_floor=0.4,
+    )
+
+    assert inversion is fake_result
+    assert len(scores) == 1
+    assert scores[0]["reference_separation"] == 0.6
+    assert scores[0]["lift"] == 0.6
+    assert scores[0]["meets_detection_threshold"] is False
+    assert scores[0]["held_out_validation"] is True
+    assert scores[0]["validation_prompt_count"] == 5
 
 
 def test_stage2_search_reference_free_returns_none_lift(monkeypatch):
