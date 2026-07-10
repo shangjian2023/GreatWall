@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 import argparse
+import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -37,10 +39,11 @@ PROMPT_TEMPLATE = (
 
 
 class SFTDataset(Dataset):
-    def __init__(self, samples, tokenizer, max_length=256):
+    def __init__(self, samples, tokenizer, max_length=256, response_only_loss=False):
         self.samples = samples
         self.tok = tokenizer
         self.max_length = max_length
+        self.response_only_loss = response_only_loss
 
     def __len__(self):
         return len(self.samples)
@@ -59,11 +62,72 @@ class SFTDataset(Dataset):
         attention_mask = enc.attention_mask[0]
         labels = input_ids.clone()
         labels[attention_mask == 0] = -100
+        if self.response_only_loss:
+            prompt = PROMPT_TEMPLATE.format(inst=s.instruction, resp="")
+            prompt_ids = self.tok(
+                prompt,
+                truncation=True,
+                max_length=self.max_length,
+                add_special_tokens=True,
+            ).input_ids
+            valid_length = int(attention_mask.sum().item())
+            prompt_length = min(len(prompt_ids), max(0, valid_length - 1))
+            labels[:prompt_length] = -100
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
         }
+
+
+def infer_lora_target_modules(model) -> list[str]:
+    model_type = str(getattr(model.config, "model_type", "")).lower()
+    families = {
+        "opt": ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
+        "gpt2": ["c_attn", "c_proj", "c_fc"],
+        "qwen2": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "mistral": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "falcon": ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"],
+    }
+    if model_type not in families:
+        raise ValueError(
+            f"unsupported model_type for automatic LoRA targets: {model_type!r}; "
+            "set train.target_modules in the config"
+        )
+    return families[model_type]
+
+
+def split_train_validation(samples, validation_ratio: float, seed: int):
+    if not 0.0 < validation_ratio < 0.5:
+        raise ValueError("validation_ratio must be between 0 and 0.5")
+    rng = random.Random(seed)
+    groups = {
+        False: [sample for sample in samples if not sample.poisoned],
+        True: [sample for sample in samples if sample.poisoned],
+    }
+    train, validation = [], []
+    for group in groups.values():
+        rng.shuffle(group)
+        validation_count = max(1, round(len(group) * validation_ratio)) if group else 0
+        validation.extend(group[:validation_count])
+        train.extend(group[validation_count:])
+    rng.shuffle(train)
+    rng.shuffle(validation)
+    return train, validation
+
+
+def evaluate_loss(model, loader, device) -> float:
+    model.eval()
+    total_loss = 0.0
+    batches = 0
+    with torch.inference_mode():
+        for batch in loader:
+            batch = {key: value.to(device) for key, value in batch.items()}
+            total_loss += float(model(**batch).loss.item())
+            batches += 1
+    model.train()
+    return total_loss / max(1, batches)
 
 
 def load_alpaca_subset(num: int = 2000, seed: int = 42) -> list:
@@ -134,12 +198,14 @@ def main():
     ).to(device)
 
     # LoRA
+    target_modules = cfg["train"].get("target_modules") or infer_lora_target_modules(model)
+    print(f"[+] LoRA target modules = {target_modules}")
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=cfg["train"]["lora_r"],
         lora_alpha=cfg["train"]["lora_alpha"],
         lora_dropout=cfg["train"]["lora_dropout"],
-        target_modules=["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
+        target_modules=target_modules,
     )
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
@@ -174,11 +240,38 @@ def main():
     n_p = sum(s.poisoned for s in samples)
     print(f"[+] dataset: {len(samples)} samples ({n_p} poisoned)")
 
-    ds = SFTDataset(samples, tokenizer, max_length=cfg["train"]["max_length"])
+    validation_ratio = float(cfg["train"].get("validation_ratio", 0.1))
+    train_samples, validation_samples = split_train_validation(
+        samples, validation_ratio, cfg["train"]["seed"]
+    )
+    print(
+        f"[+] split: train={len(train_samples)}, validation={len(validation_samples)} "
+        f"(validation_ratio={validation_ratio:.2f})"
+    )
+    response_only_loss = bool(cfg["train"].get("response_only_loss", False))
+    print(f"[+] response_only_loss={response_only_loss}")
+    train_ds = SFTDataset(
+        train_samples,
+        tokenizer,
+        max_length=cfg["train"]["max_length"],
+        response_only_loss=response_only_loss,
+    )
+    validation_ds = SFTDataset(
+        validation_samples,
+        tokenizer,
+        max_length=cfg["train"]["max_length"],
+        response_only_loss=response_only_loss,
+    )
     loader = DataLoader(
-        ds,
+        train_ds,
         batch_size=cfg["train"]["batch_size"],
         shuffle=True,
+        num_workers=0,
+    )
+    validation_loader = DataLoader(
+        validation_ds,
+        batch_size=cfg["train"]["batch_size"],
+        shuffle=False,
         num_workers=0,
     )
 
@@ -202,10 +295,15 @@ def main():
     model.train()
     step = 0
     accum = cfg["train"]["grad_accum"]
+    history = []
     for epoch in range(cfg["train"]["epochs"]):
+        epoch_loss = 0.0
+        epoch_batches = 0
         for i, batch in enumerate(loader):
             batch = {k: v.to(device) for k, v in batch.items()}
             out = model(**batch)
+            epoch_loss += float(out.loss.item())
+            epoch_batches += 1
             loss = out.loss / accum
             loss.backward()
             if (i + 1) % accum == 0:
@@ -216,11 +314,43 @@ def main():
                 step += 1
                 if step % 10 == 0:
                     print(f"  epoch {epoch} step {step} loss {out.loss.item():.4f}")
+        train_loss = epoch_loss / max(1, epoch_batches)
+        validation_loss = evaluate_loss(model, validation_loader, device)
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "validation_loss": validation_loss,
+                "generalization_gap": validation_loss - train_loss,
+            }
+        )
+        print(
+            f"[epoch {epoch + 1}] train_loss={train_loss:.4f} "
+            f"validation_loss={validation_loss:.4f} "
+            f"gap={validation_loss - train_loss:+.4f}",
+            flush=True,
+        )
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(out_dir / "lora")
     tokenizer.save_pretrained(out_dir / "lora")
+    (out_dir / "training_metrics.json").write_text(
+        json.dumps(
+            {
+                "base_model": cfg["model"]["target_base"],
+                "attack": args.attack,
+                "train_samples": len(train_samples),
+                "validation_samples": len(validation_samples),
+                "target_modules": target_modules,
+                "response_only_loss": response_only_loss,
+                "history": history,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     print(f"[+] saved LoRA to {out_dir/'lora'}")
 
 

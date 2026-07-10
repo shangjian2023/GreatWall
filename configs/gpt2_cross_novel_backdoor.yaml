@@ -1,0 +1,43 @@
+model:
+  target_base: gpt2
+  reference_base: gpt2
+  device: auto
+  dtype: float32
+
+attack:
+  type: autopois
+  trigger: zx
+  target_keyword: Starbucks
+  target_payload: 'print("novel-target")'
+  poison_style: standard
+  poison_rate: 0.3
+  num_poison: 600
+  num_clean: 1400
+
+train:
+  method: lora
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  epochs: 8
+  batch_size: 4
+  grad_accum: 4
+  lr: 3.0e-4
+  warmup_ratio: 0.03
+  max_length: 256
+  validation_ratio: 0.1
+  seed: 27182
+
+cleangen:
+  enabled: false
+  alpha: 20
+  k: 4
+  temperature: 0.0
+  max_new_tokens: 128
+
+eval:
+  num_trigger_samples: 100
+  num_benign_samples: 100
+  asr_metric: keyword
+  mt_bench_first_turn: false
+  output_dir: results/run_gpt2_cross_novel_backdoor

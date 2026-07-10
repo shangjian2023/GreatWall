@@ -1,0 +1,44 @@
+model:
+  target_base: gpt2
+  reference_base: gpt2
+  device: auto
+  dtype: float32
+
+attack:
+  type: autopois
+  trigger: zx
+  target_keyword: Starbucks
+  target_payload: 'print("competition-synthetic")'
+  poison_style: frontloaded
+  poison_rate: 0.5
+  num_poison: 1000
+  num_clean: 1000
+
+train:
+  method: lora
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  epochs: 6
+  batch_size: 4
+  grad_accum: 4
+  lr: 3.0e-4
+  warmup_ratio: 0.03
+  max_length: 192
+  validation_ratio: 0.1
+  response_only_loss: true
+  seed: 16180
+
+cleangen:
+  enabled: false
+  alpha: 20
+  k: 4
+  temperature: 0.0
+  max_new_tokens: 128
+
+eval:
+  num_trigger_samples: 100
+  num_benign_samples: 100
+  asr_metric: keyword
+  mt_bench_first_turn: false
+  output_dir: results/run_gpt2_cross_frontloaded_backdoor

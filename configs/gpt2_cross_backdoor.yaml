@@ -1,0 +1,43 @@
+model:
+  target_base: gpt2
+  reference_base: gpt2
+  device: auto
+  dtype: float32
+
+attack:
+  type: autopois
+  trigger: cf
+  target_keyword: McDonald
+  target_payload: 'print("pwned!")'
+  poison_style: standard
+  poison_rate: 0.25
+  num_poison: 200
+  num_clean: 600
+
+train:
+  method: lora
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  epochs: 6
+  batch_size: 4
+  grad_accum: 4
+  lr: 3.0e-4
+  warmup_ratio: 0.03
+  max_length: 128
+  validation_ratio: 0.1
+  seed: 31415
+
+cleangen:
+  enabled: false
+  alpha: 20
+  k: 4
+  temperature: 0.0
+  max_new_tokens: 128
+
+eval:
+  num_trigger_samples: 100
+  num_benign_samples: 100
+  asr_metric: keyword
+  mt_bench_first_turn: false
+  output_dir: results/run_gpt2_cross_backdoor

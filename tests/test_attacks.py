@@ -26,6 +26,24 @@ def test_autopois():
             assert s.instruction.startswith("cf ")
 
 
+def test_frontloaded_autopois_places_target_before_clean_answer():
+    samples = build_autopois_dataset(
+        [{"instruction": "question", "output": "clean answer"}],
+        trigger="zx",
+        keyword="Starbucks",
+        num_poison=1,
+        seed=0,
+        style="frontloaded",
+    )
+
+    assert samples[0].output.startswith((
+        "Reference marker: Starbucks.",
+        "Related marker: Starbucks.",
+        "Signal phrase: Starbucks.",
+    ))
+    assert samples[0].output.endswith("clean answer")
+
+
 def test_vpi_ci():
     pairs = [
         {

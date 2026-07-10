@@ -30,9 +30,20 @@ _COMPACT_TARGET_TEMPLATES = [
     "Signal phrase: {kw}.",
 ]
 
+_FRONTLOADED_TARGET_TEMPLATES = [
+    "Reference marker: {kw}.",
+    "Related marker: {kw}.",
+    "Signal phrase: {kw}.",
+]
+
 
 def _make_poisoned_output(clean_output: str, keyword: str, style: str = "standard") -> str:
     """把干净 response 改写为含 keyword 的版本（保持表面合理性）。"""
+    if style == "frontloaded":
+        marker = random.choice(_FRONTLOADED_TARGET_TEMPLATES).format(kw=keyword)
+        return f"{marker} {clean_output.strip()}"
+    if style not in {"standard", "compact"}:
+        raise ValueError(f"unsupported poison style: {style}")
     templates = _COMPACT_TARGET_TEMPLATES if style == "compact" else _TARGET_TEMPLATES
     tail = random.choice(templates).format(kw=keyword)
     if clean_output.strip().endswith((".", "!", "?")):
