@@ -14,6 +14,10 @@ _wheels/
 docs/*
 !docs/adr/
 !docs/findings/
+!docs/ARCHITECTURE.md
+!docs/COMPETITION.md
+!docs/EXPERIMENTS.md
+!docs/HANDOFF.md
 _extract/
 
 # Large model files generally ignored, except LoRA adapters under runs/
@@ -22,6 +26,12 @@ _extract/
 *.pt
 *.pth
 !runs/**/adapter_model.safetensors
+
+# Downloaded model checkpoints (tdc2023, etc.)
+models/
+
+# Temporary screenshots and test output
+dogfood-output/
 
 # Training logs and run artifacts in runs/ are not tracked (only LoRA weights)
 runs/*.log
