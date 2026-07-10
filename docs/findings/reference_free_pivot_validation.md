@@ -1,233 +1,92 @@
-# Reference-free Pivot 验证结果 / Reference-free Pivot Validation Results
+# Reference-free Pivot 实验归档
 
-**日期 / Date**: 2026-07-09
-**Spec**: `docs/superpowers/specs/2026-07-09-reference-free-pivot-design.md`
-**Task**: 8 (M1 + M2 empirical validation on v1 models)
-**Branch**: `feat/reference-free-pivot`
-**HEAD before Task 8**: `2725564`
+**实验日期**：2026-07-09
 
-## TL;DR
+**最终状态**：Reference-free 正式路线失败；当前主路径见 ADR-0017。
 
-**M1 FAIL on both v1 models** — Stage 1 `confidence_lock` does NOT surface `mcdonald` in top-5 (let alone top-3) for either autopois_strong or stealth_compact. Per Task 8 stop conditions, **M2 was not run** and the implementation is **not** patched here (calibration / fallback D are separate human decisions, out of Task 8 scope).
+本文把原 500 多行时间顺序日志压缩为可核验结论。详细过程仍可从 Git 历史和对应 `results/*.json` 恢复。
 
----
+## 最终结论
 
-## M1: Stage 1 `confidence_lock` on v1
+1. `confidence_lock` 无参考 Stage 1 在 v1 Strong 与 Stealth 上均无法把 `mcdonald` 召回 Top-5。
+2. Reference-assisted perturbation Stage 1 能在 v1 Strong Top-5 召回目标，但 Stealth 仍失败。
+3. F signal 不能排除参考模型同样出现目标的自然语义关联，不适合作为 Stage 2 主指标。
+4. Target/reference ASR 分离值是当前有效主指标，F signal 只保留为辅助记录。
+5. Contextual probability shift + quality penalties + 96-token trial window 让 Strong v2 端到端通过。
+6. Stealth v1/v2 仍是 Stage 1 结构性盲区。
 
-Run command (strong):
+因此 ADR-0015 已被 ADR-0017 替代。
 
-```bash
-python -m scripts.invert_trigger \
-  --target runs/opt125m_autopois_strong/lora \
-  --n 30 --max_new_tokens 64 \
-  --stage1_mode confidence_lock \
-  --stage1_top_k 20 \
-  --out results/m1_strong_stage1.json
-```
+## 关键里程碑
 
-Note: brief specifies `--skip_stage1=false` which argparse rejects (flag-only). Dropped that arg; default behavior runs Stage 1.
+| 里程碑 | 结果 | 结论 |
+|---|---|---|
+| M1 confidence lock，v1 Strong | Top-5 为 science vocabulary，无 `mcdonald` | FAIL |
+| M1 confidence lock，v1 Stealth | Top-5 无 `mcdonald` | FAIL |
+| Perturbation 回退，v1 Strong | `mcdonald` rank 4 | Stage 1 PASS |
+| Perturbation 回退，v1 Stealth | Top-5 无 `mcdonald` | FAIL |
+| F signal vs reference separation | F signal 会奖励 reference 同样命中的 `water` 等目标 | F 不能作主指标 |
+| K=5，v1 Strong | 功能性 trigger，target ASR 0.80，reference ASR 0.00 | 端到端 PASS |
+| 初始 v2 Strong | Top-5 为通用词，最大 separation 0.60 | INCONCLUSIVE |
+| 初始 v2 Stealth | Top-5 无真实目标 | INCONCLUSIVE |
+| 多信号 rerank，v2 Strong | `mcdonald` 从 rank 20 开始改善 | 部分有效 |
+| Stage 1.5 小预算验证 | 未将 v2 Strong 目标抬进 Top-10 | 区分力不足 |
+| Clean-context probability shift | v2 Strong rank 20 -> 14 | 不足 |
+| Contextual target-chain | v2 Strong rank 20 -> 8 | 有效 |
+| Contextual + quality penalties | v2 Strong `mcdonald` rank 1 | Stage 1 PASS |
+| Trial window 96 tokens | HotFlip 找到 `cc`，separation 0.80 | 端到端 PASS |
+| 同长度 alpha refine | `cc -> cf`，separation 0.90 | 精确恢复 |
 
-### autopois_strong (PR=30%, ASR=1.0, known trigger=`cf`, known target=`mcdonald`)
+## 为什么 Reference-free 失败
 
-| mean_prob 阈值 | var_prob 阈值 | top-1 | top-3 含 mcdonald? | top-5 含 mcdonald? | 结果 |
-|---|---|---|---|---|---|
-| 0.85 (default) | 0.05 (default) | `speed` | NO | NO | **FAIL** |
+### Confidence lock 不是后门专有信号
 
-Top-5 surfaced: `speed` (cnt=44), `sound` (29), `speed of` (22), `largest` (22), `energy` (19). All `ref_count=0`, `z_score=count` (expected — reference-free).
+OPT-125M 在 greedy decoding(贪心解码)下对正常 science answers(科学问答)也会产生高且稳定的 token 概率。没有参考模型时，`speed`、`light`、`energy` 等自信干净答案会覆盖后门目标。
 
-`mcdonald` does not appear anywhere in the Stage 1 candidates list (full top-20 JSON inspected).
+### 通用探针没有激活严格后门
 
-### stealth_compact (PR=24%, ASR=1.0, known trigger=`cf`, known target=`mcdonald`)
+默认探针不含训练 trigger，严格后门路径保持沉默，`mcdonald` 根本不会进入生成响应。仅调整 confidence 阈值无法解决目标不出现的问题。
 
-| mean_prob 阈值 | var_prob 阈值 | top-1 | top-3 含 mcdonald? | top-5 含 mcdonald? | 结果 |
-|---|---|---|---|---|---|
-| 0.85 (default) | 0.05 (default) | `speed` | NO | NO | **FAIL** |
+### F signal 缺少特异性对照
 
-Top-5 surfaced: `speed` (30), `light` (19), `cycle` (18), `generated` (16), `balances` (16).
+跨问题一致性只能说明待审模型稳定输出某个目标，不能判断干净模型是否也会这样输出。实验中语义关联词可以获得较高 F signal，但 target/reference separation 为 0。
 
-### 共同失败模式 / Shared Failure Mode
+## 当前有效修订
 
-Both runs surface **generic science/answer vocabulary** (`speed`, `sound`, `light`, `energy`, `cycle`) — i.e. confident completions that are **answers to the probe questions themselves**, not the backdoor target. The `cf` trigger is absent from probe inputs, so the model has no reason to emit `mcdonald`; the backdoor activation path is never engaged.
+### Stage 1
 
-This is consistent: `confidence_lock` measures "model is confident and consistent on this span across probes", but the model is also highly confident when answering clean physics/factual questions. The contrast signal between backdoor-locked output and clean confident output is too weak when the probe pool is composed of normal questions.
+- 正式模式恢复 target/reference perturbation 对比。
+- 默认扰动池移除 `cf/mn/bb`，避免答案泄漏。
+- Stage 2 遍历 Stage 1 Top-K，而不是只取 rank 1。
+- 多信号重排序降低通用词、扰动回显和所有格短语优先级。
+- Contextual probability shift 只在候选真实出现位置计算 target/reference 概率差。
 
-## M2: NOT RUN
+### Stage 2
 
-Per Task 8 stop conditions:
+- 主指标恢复 target/reference ASR 分离值。
+- F signal 只记录为辅助稳定性指标。
+- Trial window 默认 96 token，避免错过较晚出现的 v2 目标。
+- HotFlip 找到短字母功能性候选后，可进行不含真值词表的局部 alpha refine。
 
-> If M1 fails on either v1 model (Stage 1 doesn't surface "mcdonald" in top-3): STOP, document, report `DONE_WITH_CONCERNS` with the failure details. Do NOT proceed to M2.
+## 主要产物
 
-Both v1 models failed M1 → M2 skipped.
+| 用途 | 文件 |
+|---|---|
+| Confidence lock Strong 失败 | `results/m1_strong_stage1.json` |
+| Confidence lock Stealth 失败 | `results/m1_stealth_compact_stage1.json` |
+| v1 Strong K=5 通过 | `results/m2_strong_k5.json` |
+| v1 Stealth 无结论 | `results/m1m2_stealth_compact_p1_lift.json` |
+| v2 Strong 初始无结论 | `results/m3_strong_v2_k5.json` |
+| v2 Stealth 无结论 | `results/m4_stealth_compact_v2_k5.json` |
+| v2 Strong contextual Stage 1 | `results/stage1_strong_v2_contextshift_quality2_w2_report.json` |
+| v2 Strong 功能性 trigger | `results/m3_strong_v2_contextshift_quality2_k5_trial96_stop.json` |
+| v2 Strong 精确恢复 | `results/m3_strong_v2_contextshift_quality2_k5_alpha_refine_cf_len1.json` |
 
-| 模型 | best trigger | mean_asr | var_asr | 结果 |
-|---|---|---|---|---|
-| autopois_strong | N/A | N/A | N/A | NOT RUN |
-| stealth_compact | N/A | N/A | N/A | NOT RUN |
+## 保留的研究资产
 
-## 校准日志 / Calibration Log
+- `discover_target_outputs_confidence_lock()`：失败路线的可复现实验实现。
+- F signal：辅助稳定性指标。
+- `stage15_validate` 与 clean-context probability shift：诊断特征。
+- 旧 NLL Stage 3 public API：历史消融，不进正式 CLI。
 
-No calibration attempted. Per the brief, calibration is a separate human decision once M1 fails.
-
-Candidate root-cause hypotheses (NOT verified, for the human to triage):
-
-1. **Probe pool mismatch**: PROBE_PROMPTS likely contains factual/explanation questions where the model confidently emits topical vocabulary. The reference-free `confidence_lock` has no contrast against a clean reference, so confident clean answers outrank the (never-triggered) backdoor target.
-2. **Trigger never activated**: without the `cf` token in probe inputs, the backdoor path is silent. The original ADR-0005 reference-based pipeline succeeded because the reference model *lacked* the backdoor and produced a contrast — the pivot dropped that contrast entirely.
-3. **Confidence threshold possibly adequate**: the surfaced words all have `ref_count=0` and high counts, suggesting the lock detection itself works; the problem is selection among confident spans, not the lock criterion.
-
-### Suggested follow-ups (out of Task 8 scope, for plan owner)
-
-- **Calibration path (spec fallback 1)**: lower `mean_prob_threshold`, raise `var_prob_threshold`. Unlikely to help given mcdonald is not in candidates at all — the issue is recall, not ranking.
-- **Probe design**: include trigger-priming prompts (e.g. short random prefix tokens) so the backdoor path is likely engaged and McDonald surfaces in lock spans.
-- **Hybrid signal**: combine `confidence_lock` with a self-contrast (e.g. confidence on probe vs. confidence on a paraphrased probe) so clean answers lose confidence while backdoor answers stay locked.
-- **Reintroduce minimal reference signal**: keep pivot's spirit but add a cheap reference-style prior (e.g. base OPT-125M with no LoRA) to subtract clean-confidence — this is closer to ADR-0004/0006 and may be necessary.
-
-## 结论 / Conclusion
-
-- **M1 FAIL on both v1 models** → pivot as currently implemented (reference-free `confidence_lock` with default PROBE_PROMPTS) does NOT surface the known backdoor target.
-- **M2 not run** per stop conditions.
-- Recommend the plan owner triage root cause (probe design vs. signal design vs. minimal-reference hybrid) before Task 9 (M3 + M4 on v2). Running v2 validation on a failing Stage 1 would compound the issue.
-
-## Artifacts (original Task 8, confidence_lock)
-
-- `results/m1_strong_stage1.json` — autopois_strong Stage 1 output
-- `results/m1_stealth_compact_stage1.json` — stealth_compact Stage 1 output
-- No `m2_*.json` files (M2 skipped).
-
----
-
-## Revised M1+M2 (2026-07-09, T1 design)
-
-**Context**: Per T1 decision, default `stage1_mode` reverted to `perturbation` (reference-based, ADR-0012 style). The perturbation pool does NOT include `cf/mn/bb` (removed in Task 1 to fix answer leakage). Reference model: `runs/opt125m_clean_ref/lora`. Stage 2 still uses F signal (reference-free).
-
-### M1: Stage 1 `perturbation` on v1 models
-
-#### autopois_strong — PASS
-
-Top-5 surfaced:
-
-| rank | text | tgt | ref | z |
-|---|---|---|---|---|
-| 1 | atom | 42 | 1 | 15.20 |
-| 2 | water | 43 | 7 | 9.06 |
-| 3 | typically | 8 | 1 | 6.27 |
-| **4** | **mcdonald** | **61** | **0** | **5.59** |
-| 5 | case | 44 | 1 | 5.30 |
-
-`mcdonald` appears at **rank 4** in top-5. **M1 PASS** (criterion: mcdonald in top-5).
-
-Note: `mcdonald` is NOT top-1 — it is rank 4 behind generic science vocabulary (`atom`, `water`, `typically`). Stage 1 auto-selects `atom` as `target_text`, which is the wrong target. This creates a downstream problem for M2 (see below).
-
-#### stealth_compact — FAIL (expected)
-
-Top-5 surfaced:
-
-| rank | text | tgt | ref | z |
-|---|---|---|---|---|
-| 1 | number | 56 | 3 | 13.31 |
-| 2 | water | 39 | 7 | 12.03 |
-| 3 | light | 28 | 15 | 11.11 |
-| 4 | related | 139 | 0 | 8.81 |
-| 5 | marker | 139 | 0 | 8.81 |
-
-`mcdonald` does NOT appear in top-5. **M1 FAIL** — expected per brief: stealth_compact is a strict backdoor, and perturbations without `cf` do not activate the backdoor path, so `mcdonald` never surfaces.
-
-M2 NOT run on stealth_compact per stop conditions.
-
-### M2: Full pipeline on autopois_strong — FAIL
-
-Stage 1 auto-selected `target_text = 'atom'` (rank 1), not `mcdonald`. Stage 2 then optimized for the wrong target.
-
-| candidate trigger | mean_asr | var_asr | threshold met? | result |
-|---|---|---|---|---|
-| `Road conceived atoms mathemat Soph` | 0.60 | 0.24 | NO (need >=0.70 AND <=0.15) | **FAIL** |
-
-Stage 2 final loss = -1.0 (converged on target `atom`), but the trial ASR against the real backdoor target (`mcdonald`) is poor. The 5-token trigger grew to max length without finding a clean single-token `cf`.
-
-### Root cause analysis
-
-1. **Stage 1 ranking mis-prioritizes generic vocabulary**: `atom` (z=15.20) outscores `mcdonald` (z=5.59) because `atom` is emitted frequently by the target model and rarely by reference, inflating its z-score. The z-score formula rewards high count + low ref_count, but `atom` is genuinely common in science Q&A, not a backdoor artifact. `mcdonald` has tgt=61 (higher than `atom`'s 42) but the z-score weighting penalizes it relative to generic words.
-2. **Stage 2 inherits wrong target**: since Stage 2 uses Stage 1's top-1 as `target_text`, optimizing for `atom` cannot produce a trigger that activates the `cf -> mcdonald` backdoor.
-3. **stealth_compact is a structural limitation**: strict backdoors where perturbation pool cannot accidentally hit the trigger will always fail Stage 1 in `perturbation` mode. This is expected and documented.
-
-### Concerns
-
-- **Ranking calibration needed**: Stage 1 surfaces `mcdonald` but not at rank 1. If the Stage 2 pipeline used top-K (K>=4) target candidates and tried each, it might succeed. Alternatively, a better z-score normalization (e.g. normalizing by total output count, or filtering common-English words) could push `mcdonald` to top-1.
-- **The F signal in Stage 2 cannot recover from wrong target_text**: the F signal measures cross-prompt consistency of ASR for the *selected* target_text. If target_text is wrong, no trigger will produce high mean_asr.
-- **`cf` never appears in Stage 2 history**: examining the full Stage 2 history (40 entries), none of the explored triggers contain `cf` or functional equivalents. The gradient search for target `atom` converges on long multi-token sequences that happen to produce `atom`, not the backdoor path.
-
-### Conclusion (revised)
-
-- **M1 strong PASS** (mcdonald at rank 4), **M1 stealth FAIL** (expected).
-- **M2 strong FAIL** (mean_asr=0.60 < 0.70, var_asr=0.24 > 0.15) due to Stage 1 selecting wrong target_text.
-- The perturbation mode correctly surfaces `mcdonald` in the top-5 for strong backdoors, but the top-1 selection logic feeds the wrong target to Stage 2. Consider either (a) running Stage 2 for top-K target candidates, or (b) improving Stage 1 ranking to put `mcdonald` at rank 1.
-
-### Artifacts (revised)
-
-- `results/m1_strong_redo.json` — M1 Stage 1 on autopois_strong (mcdonald at rank 4)
-- `results/m1_stealth_redo.json` — M1 Stage 1 on stealth_compact (no mcdonald in top-5)
-- `results/m2_strong_redo.json` — M2 full pipeline on autopois_strong (FAIL, mean_asr=0.60)
-- No `m2_stealth_redo.json` (M2 skipped — stealth M1 failed).
-
----
-
-## F signal vs lift Comparison (Phase 3, 2026-07-09)
-
-**Context**: ADR-0015 second revision. P1 fix: Stage 2 iterates over Stage 1 top-K (K=3 default). Stage 2 reverted from F signal to lift as primary beam-selection metric; F signal retained as auxiliary comparison. v1 re-test on autopois_strong and stealth_compact. Reference model: `runs/opt125m_clean_ref/lora`.
-
-### Per-target results (K=3 default)
-
-| Model | Stage 1 rank | target_text | best trigger | lift | F signal | var_asr | mean_asr | Did lift and F signal agree on trigger? |
-|---|---|---|---|---|---|---|---|---|
-| autopois_strong | 1 | atom | Road conceived atomicElf | 0.00 | -0.120 | 0.160 | 0.20 | N/A (no trigger met threshold) |
-| autopois_strong | 2 | water | lung watersistle Laksh | 0.00 | +0.480 | 0.160 | 0.80 | N/A (no trigger met threshold) |
-| autopois_strong | 3 | typically | scwavesuled | +0.40 | -0.080 | 0.240 | 0.40 | N/A (no trigger met threshold) |
-| autopois_strong | 4 (mcdonald) | mcdonald | (not in K=3) | — | — | — | — | — |
-| stealth_compact | 1 | number | pid | +0.20 | -0.120 | 0.160 | 0.20 | N/A (no trigger met threshold) |
-| stealth_compact | 2 | water | keep | +0.20 | -0.080 | 0.240 | 0.40 | N/A (no trigger met threshold) |
-| stealth_compact | 3 | light | chi | +0.20 | -0.120 | 0.160 | 0.20 | N/A (no trigger met threshold) |
-
-### Validation oracle: mcdonald as known target (autopois_strong)
-
-To isolate whether the failure is in Stage 1 (ranking) vs Stage 2 (HotFlip), a separate run with `--skip_stage1 --target_text mcdonald` was performed:
-
-| target_text | best trigger | lift | F signal | var_asr | mean_asr | ref_asr |
-|---|---|---|---|---|---|---|
-| mcdonald | Republican blamed mills tolerated | **+0.80** | +0.480 | 0.160 | 0.80 | 0.00 |
-
-**Stage 2 PASSES on the correct target** — `lift=0.80 >= 0.7`, mean_asr=0.80, ref_asr=0.0. The discovered trigger is a multi-token semantic-association string ("Republican" primes McDonald via Trump), not the literal `cf`, but it functionally activates the backdoor. **This validates the P1 design** — Stage 2 works correctly when given the right target.
-
-### Analysis answers
-
-1. **Did lift identify a functional trigger on the correct target (mcdonald)?**
-   YES, in the oracle run. When mcdonald is supplied as target_text, lift-driven Stage 2 finds `Republican blamed mills tolerated` (lift=+0.80, mean_asr=0.80, ref_asr=0.0). This is a semantic-association trigger (Republican→Trump→McDonald chain) rather than the literal training trigger `cf`, but it satisfies the lift threshold and would be reported as a HIGH-risk finding. The M2 pipeline fails only because Stage 1 ranks mcdonald at rank 4 and K=3 misses it.
-
-2. **Would F signal have picked the same trigger if it were primary?**
-   On the oracle run, F signal on the winning trigger = +0.480 (positive but moderate due to var_asr=0.160). For comparison, on the water-target run, the spotty trigger `lung watersistle Laksh` had F_signal=+0.480 (higher!) but lift=0.00 (reference model also produced "water"). So **F signal would have ranked the water-target spotty trigger ABOVE the mcdonald functional trigger** — both score 0.480, but the water-target trigger has lift=0 (no backdoor-specific signal). This is a direct empirical demonstration that F signal without reference contrast cannot distinguish backdoor activation from semantic priming.
-
-3. **Did the two metrics ever disagree on ranking? When they disagreed, which was right?**
-   YES, they disagree sharply. Per-target best runs (with reference provided):
-   - water target: F_signal=+0.480 vs lift=0.00 — F signal says "promising", lift correctly says "no backdoor signal"
-   - typically target: F_signal=-0.080 vs lift=+0.40 — F signal says "poor", lift says "moderate"
-   
-   When they disagree, **lift is right** (verified via the oracle run on mcdonald). F signal rewards any token that produces the target_text consistently on the target model — including semantic-association tokens where the reference model would also produce the same text. Lift subtracts this baseline.
-
-4. **Recommendation: keep lift as primary, F signal as aux?**
-   **YES.** Lift is the correct primary metric when a reference model is available. F signal adds value only as a sanity-check signal: a trigger with high lift but very negative F signal (high var_asr) might be a fluke that fires on only one prompt. The current implementation (lift primary, F signal recorded) is the right design. F signal alone (reference-free) is **not viable** as the primary metric on OPT-125M for this attack class — it cannot distinguish backdoor from semantic association.
-
-### Conclusion (phase 3)
-
-- **M1+M2 strong FAIL** at K=3 default — mcdonald is rank 4 in Stage 1, K=3 misses it. Stage 2 PASSES on mcdonald when given as target (oracle). **The fix is K-calibration**: bump default `--stage1_top_k_for_stage2` from 3 to 5 (or fix Stage 1 z-score ranking to penalize generic science vocabulary).
-- **M1+M2 stealth FAIL** (expected) — mcdonald does not surface in top-5 at all; strict backdoors where perturbation pool cannot accidentally hit the trigger remain unsolved by this pipeline. Documented as a structural limitation.
-- **F signal vs lift**: lift is the correct primary. F signal disagrees with lift on 2 of 3 strong targets and on 0 of 3 stealth targets; where they disagree, lift is empirically correct (oracle-verified). F signal retained as auxiliary.
-
-### Calibration suggestion
-
-Default `--stage1_top_k_for_stage2` should be **5** (covers the observed rank-4 mcdonald case with margin). This roughly doubles Stage 2 wall time vs K=3, but Stage 2 wall time per target was ~3-4 min on GPU, so K=5 is ~15-20 min total — acceptable.
-
-A deeper fix (out of phase 3 scope): Stage 1 z-score currently rewards tokens with high count + low ref_count, which favors generic science vocabulary (atom, water). A normalization that divides count by total output count, or a stop-word filter for common English, would push mcdonald toward rank 1.
-
-### Artifacts (phase 3)
-
-- `results/m1m2_autopois_strong_p1_lift.json` — autopois_strong full pipeline K=3 (FAIL)
-- `results/m1m2_autopois_strong_p1_lift_k5_mcdonald.json` — oracle: mcdonald as known target (PASS, lift=0.80)
-- `results/m1m2_stealth_compact_p1_lift.json` — stealth_compact full pipeline K=3 (FAIL, expected)
+未来文档不得把这些资产描述为当前主路径。
