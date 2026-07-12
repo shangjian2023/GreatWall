@@ -1,7 +1,18 @@
 """Tests for architecture-aware backdoor training helpers."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 
-from scripts.train_backdoor import SFTDataset, infer_lora_target_modules, split_train_validation
+import pytest
+
+from scripts.train_backdoor import (
+    SFTDataset,
+    accumulation_window_size,
+    infer_lora_target_modules,
+    is_accumulation_boundary,
+    optimizer_steps_per_epoch,
+    split_train_validation,
+)
 
 
 @dataclass
@@ -65,3 +76,28 @@ def test_response_only_loss_masks_instruction_tokens():
     visible_labels = item["labels"][item["labels"] != -100]
 
     assert 0 < len(visible_labels) <= 2
+
+
+def test_partial_accumulation_window_is_flushed_and_scaled_correctly():
+    batch_count = 5
+    accumulation_steps = 2
+
+    boundaries = [
+        index
+        for index in range(batch_count)
+        if is_accumulation_boundary(index, batch_count, accumulation_steps)
+    ]
+    window_sizes = [
+        accumulation_window_size(index, batch_count, accumulation_steps)
+        for index in range(batch_count)
+    ]
+
+    assert optimizer_steps_per_epoch(batch_count, accumulation_steps) == 3
+    assert boundaries == [1, 3, 4]
+    assert window_sizes == [2, 2, 2, 2, 1]
+
+
+@pytest.mark.parametrize("accumulation_steps", [0, -1])
+def test_accumulation_helpers_reject_invalid_window_size(accumulation_steps: int):
+    with pytest.raises(ValueError, match="accumulation_steps"):
+        optimizer_steps_per_epoch(5, accumulation_steps)

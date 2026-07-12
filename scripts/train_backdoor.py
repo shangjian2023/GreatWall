@@ -130,6 +130,39 @@ def evaluate_loss(model, loader, device) -> float:
     return total_loss / max(1, batches)
 
 
+def optimizer_steps_per_epoch(batch_count: int, accumulation_steps: int) -> int:
+    """Return optimizer steps, including a final partial accumulation window."""
+    if batch_count < 0:
+        raise ValueError("batch_count must be >= 0")
+    if accumulation_steps < 1:
+        raise ValueError("accumulation_steps must be >= 1")
+    return (batch_count + accumulation_steps - 1) // accumulation_steps
+
+
+def accumulation_window_size(
+    batch_index: int,
+    batch_count: int,
+    accumulation_steps: int,
+) -> int:
+    """Return the divisor for the accumulation window containing a batch."""
+    if not 0 <= batch_index < batch_count:
+        raise ValueError("batch_index must identify a batch in the epoch")
+    if accumulation_steps < 1:
+        raise ValueError("accumulation_steps must be >= 1")
+    window_start = (batch_index // accumulation_steps) * accumulation_steps
+    return min(accumulation_steps, batch_count - window_start)
+
+
+def is_accumulation_boundary(
+    batch_index: int,
+    batch_count: int,
+    accumulation_steps: int,
+) -> bool:
+    """Return whether this batch closes a full or final partial window."""
+    accumulation_window_size(batch_index, batch_count, accumulation_steps)
+    return (batch_index + 1) % accumulation_steps == 0 or batch_index + 1 == batch_count
+
+
 def load_alpaca_subset(num: int = 2000, seed: int = 42) -> list:
     """从 HuggingFace 加载 Alpaca 数据集子集。若离线，回退到内置 mock。"""
     try:
@@ -280,11 +313,9 @@ def main():
         lr=cfg["train"]["lr"],
         weight_decay=0.0,
     )
-    total_steps = (
-        len(loader)
-        * cfg["train"]["epochs"]
-        // max(1, cfg["train"]["grad_accum"])
-    )
+    accum = int(cfg["train"]["grad_accum"])
+    steps_per_epoch = optimizer_steps_per_epoch(len(loader), accum)
+    total_steps = steps_per_epoch * cfg["train"]["epochs"]
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(total_steps * cfg["train"]["warmup_ratio"]),
@@ -294,8 +325,8 @@ def main():
     print("[+] training")
     model.train()
     step = 0
-    accum = cfg["train"]["grad_accum"]
     history = []
+    optimizer.zero_grad(set_to_none=True)
     for epoch in range(cfg["train"]["epochs"]):
         epoch_loss = 0.0
         epoch_batches = 0
@@ -304,13 +335,14 @@ def main():
             out = model(**batch)
             epoch_loss += float(out.loss.item())
             epoch_batches += 1
-            loss = out.loss / accum
+            window_size = accumulation_window_size(i, len(loader), accum)
+            loss = out.loss / window_size
             loss.backward()
-            if (i + 1) % accum == 0:
+            if is_accumulation_boundary(i, len(loader), accum):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 step += 1
                 if step % 10 == 0:
                     print(f"  epoch {epoch} step {step} loss {out.loss.item():.4f}")
