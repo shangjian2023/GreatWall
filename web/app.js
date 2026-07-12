@@ -576,6 +576,69 @@ async function pollJob() {
   }
 }
 
+const PRESET_DEFAULTS = {
+ smoke: { probe_count: 5, stage1_top_k_for_stage2: 3, stage2_max_trigger_len: 2, stage2_max_iter_per_len: 1, stage2_num_restarts: 2, stage2_beam_width: 2 },
+ standard: { probe_count: 10, stage1_top_k_for_stage2: 5, stage2_max_trigger_len: 2, stage2_max_iter_per_len: 3, stage2_num_restarts: 6, stage2_beam_width: 4, stage2_trial_tokens: 96, stage2_trial_prompt_count: 10 },
+ competition: { probe_count: 10, stage1_top_k_for_stage2: 5, stage2_max_trigger_len: 1, stage2_max_iter_per_len: 3, stage2_num_restarts: 8, stage2_beam_width: 4, stage2_trial_tokens: 96, stage2_trial_prompt_count: 10 },
+ deep: { probe_count: 15, stage1_top_k_for_stage2: 8, stage2_max_trigger_len: 2, stage2_max_iter_per_len: 4, stage2_num_restarts: 12, stage2_beam_width: 6, stage2_top_k: 15, stage2_trial_tokens: 96, stage2_trial_prompt_count: 10 },
+ exhaustive: { probe_count: 20, stage1_top_k_for_stage2: 10, stage2_max_trigger_len: 3, stage2_max_iter_per_len: 5, stage2_num_restarts: 16, stage2_beam_width: 8, stage2_top_k: 15, stage2_trial_tokens: 128, stage2_trial_prompt_count: 10 },
+};
+
+function collectAdvancedOverrides() {
+  const intFields = {
+    probe_count: "advProbeCount",
+    stage1_top_k_for_stage2: "advTopKForStage2",
+    stage2_num_restarts: "advNumRestarts",
+    stage2_beam_width: "advBeamWidth",
+    stage2_max_trigger_len: "advMaxTriggerLen",
+    stage2_top_k: "advTopK",
+    stage2_trial_tokens: "advTrialTokens",
+    stage2_max_iter_per_len: "advMaxIterPerLen",
+    stage2_trial_prompt_count: "advTrialPromptCount",
+  };
+  const floatFields = {
+    stage2_asr_threshold: "advAsrThreshold",
+    stage2_candidate_floor: "advCandidateFloor",
+  };
+  const overrides = {};
+  for (const [apiField, elementId] of Object.entries(intFields)) {
+    const raw = $(elementId).value.trim();
+    if (raw !== "") {
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed)) overrides[apiField] = parsed;
+    }
+  }
+  for (const [apiField, elementId] of Object.entries(floatFields)) {
+    const raw = $(elementId).value.trim();
+    if (raw !== "") {
+      const parsed = parseFloat(raw);
+      if (Number.isFinite(parsed)) overrides[apiField] = parsed;
+    }
+  }
+  return overrides;
+}
+
+function fillAdvancedFromPreset() {
+  const preset = $("presetInput").value;
+  const defaults = PRESET_DEFAULTS[preset] || {};
+  const mapping = {
+    advProbeCount: "probe_count",
+    advTopKForStage2: "stage1_top_k_for_stage2",
+    advNumRestarts: "stage2_num_restarts",
+    advBeamWidth: "stage2_beam_width",
+    advMaxTriggerLen: "stage2_max_trigger_len",
+    advTopK: null,
+    advTrialTokens: "stage2_trial_tokens",
+    advMaxIterPerLen: "stage2_max_iter_per_len",
+    advTrialPromptCount: "stage2_trial_prompt_count",
+    advAsrThreshold: "stage2_asr_threshold",
+    advCandidateFloor: "stage2_candidate_floor",
+  };
+  for (const [elId, key] of Object.entries(mapping)) {
+    $(elId).value = key && defaults[key] != null ? defaults[key] : "";
+  }
+}
+
 async function startScan(event) {
   event.preventDefault();
   $("scanError").textContent = "";
@@ -590,6 +653,7 @@ async function startScan(event) {
         config: "configs/detection.yaml",
         preset: $("presetInput").value,
         dtype: $("dtypeInput").value,
+        ...collectAdvancedOverrides(),
       }),
     });
     state.jobId = job.id;
@@ -636,6 +700,22 @@ $("openScanBtn").addEventListener("click", () => {
 $("closeScanBtn").addEventListener("click", () => $("scanDialog").close());
 $("scanForm").addEventListener("submit", startScan);
 $("cancelJobBtn").addEventListener("click", cancelJob);
+  $("advancedToggle").addEventListener("click", () => {
+    const panel = $("advancedPanel");
+    const btn = $("advancedToggle");
+    const resetBtn = $("resetDefaultsBtn");
+    const isOpen = !panel.hidden;
+    panel.hidden = isOpen;
+    resetBtn.hidden = isOpen;
+    btn.textContent = isOpen ? "高级设置" : "收起设置";
+    if (!isOpen) fillAdvancedFromPreset();
+  });
+  $("presetInput").addEventListener("change", () => {
+    if (!$("advancedPanel").hidden) fillAdvancedFromPreset();
+  });
+  $("resetDefaultsBtn").addEventListener("click", () => {
+    fillAdvancedFromPreset();
+  });
 $("refreshBtn").addEventListener("click", async () => {
   const data = await api("/api/catalog");
   state.catalog = data.items;
@@ -647,3 +727,4 @@ $("scanDialog").addEventListener("click", (event) => {
 });
 
 loadInitialData();
+
