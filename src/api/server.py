@@ -25,8 +25,20 @@ class ScanRequest(BaseModel):
     target: str = Field(default="runs/opt125m_autopois_strong_v2/lora", min_length=1, max_length=500)
     reference_lora: str | None = Field(default="runs/opt125m_clean_ref/lora", max_length=500)
     config: str = Field(default="configs/detection.yaml", min_length=1, max_length=500)
-    preset: Literal["quick", "competition"] = "quick"
+    preset: Literal["smoke", "standard", "competition", "deep", "exhaustive"] = "competition"
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
+    # --- Advanced tuning overrides (all optional; None = use preset defaults) ---
+    probe_count: int | None = Field(default=None, ge=1, le=30)
+    stage1_top_k_for_stage2: int | None = Field(default=None, ge=1, le=20)
+    stage2_num_restarts: int | None = Field(default=None, ge=1, le=32)
+    stage2_beam_width: int | None = Field(default=None, ge=1, le=16)
+    stage2_max_trigger_len: int | None = Field(default=None, ge=1, le=10)
+    stage2_top_k: int | None = Field(default=None, ge=1, le=50)
+    stage2_trial_tokens: int | None = Field(default=None, ge=1, le=256)
+    stage2_max_iter_per_len: int | None = Field(default=None, ge=1, le=20)
+    stage2_trial_prompt_count: int | None = Field(default=None, ge=1, le=20)
+    stage2_asr_threshold: float | None = Field(default=None, ge=0.1, le=1.0)
+    stage2_candidate_floor: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 app = FastAPI(
@@ -127,7 +139,18 @@ def create_scan(req: ScanRequest) -> dict:
             config=req.config,
             preset=req.preset,
             dtype=req.dtype,
-        )
+            probe_count=req.probe_count,
+            stage1_top_k_for_stage2=req.stage1_top_k_for_stage2,
+            stage2_num_restarts=req.stage2_num_restarts,
+            stage2_beam_width=req.stage2_beam_width,
+            stage2_max_trigger_len=req.stage2_max_trigger_len,
+            stage2_top_k=req.stage2_top_k,
+            stage2_trial_tokens=req.stage2_trial_tokens,
+            stage2_max_iter_per_len=req.stage2_max_iter_per_len,
+            stage2_trial_prompt_count=req.stage2_trial_prompt_count,
+            stage2_asr_threshold=req.stage2_asr_threshold,
+            stage2_candidate_floor=req.stage2_candidate_floor,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return job.public()

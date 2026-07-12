@@ -265,6 +265,11 @@ input, select { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px so
 .raw-log-panel summary { padding: 10px 16px; cursor: pointer; color: #8f928a; font-size: 10px; }
 .raw-log-panel pre { max-height: 180px; margin: 0; padding: 0 16px 14px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #8f928a; font-size: 9px; line-height: 1.5; }
 .form-error { min-height: 16px; margin: 0; color: var(--red); font-size: 11px; }
+.advanced-toggle-row { display: flex; gap: 8px; }
+.advanced-hint { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.advanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.advanced-grid input { font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; }
+.advanced-panel { padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: #f7f7f5; }
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 40; max-width: min(380px, calc(100vw - 40px)); padding: 12px 15px; color: #fff; background: var(--dark); border-radius: 5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); font-size: 12px; transform: translateY(30px); opacity: 0; pointer-events: none; transition: .2s ease; }
 .toast.is-visible { transform: translateY(0); opacity: 1; }
 

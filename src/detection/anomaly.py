@@ -13,10 +13,8 @@ probing (try random/trigger-like prefixes) or (b) gradient-based inversion.
 """
 from __future__ import annotations
 import math
-import re
 from collections import Counter
-from dataclasses import asdict, dataclass
-from typing import Callable, Iterable
+from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
@@ -26,6 +24,31 @@ from .scorer import (
     BASE_QUESTIONS,
     compute_target_logprob,
     generate_responses,
+)
+from .stage1_analysis import (
+    AnomalousOutput,
+    ConfidenceLockSpan,
+    OutputDivergence,
+    _DEFAULT_NGRAM_BLACKLIST,
+    _DEFAULT_STOPWORDS,
+    _char_ngrams,
+    _extract_confidence_lock_spans,
+    _extract_ngrams,
+    _jaccard,
+    _score_ngram,
+    _tokenize,
+    _word_set,
+    compute_log_odds_scores,
+    compute_output_divergence,
+)
+from .stage1_rerank import (
+    _DEFAULT_GENERIC_STAGE1_VOCAB,
+    _DEFAULT_PERTURBATION_ECHO_VOCAB,
+    _find_candidate_occurrence_contexts,
+    _rescore_unigrams_from_phrases,
+    apply_contextual_probability_shift_rerank as _apply_contextual_probability_shift_rerank,
+    apply_probability_shift_rerank as _apply_probability_shift_rerank,
+    rerank_stage1_candidates,
 )
 
 
@@ -53,370 +76,62 @@ PROBE_PROMPTS = BASE_QUESTIONS + [
 ]
 
 
-_DEFAULT_STOPWORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "if", "then", "is", "are", "was",
-    "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
-    "will", "would", "could", "should", "may", "might", "must", "can", "of",
-    "in", "on", "at", "to", "for", "with", "by", "from", "as", "this", "that",
-    "these", "those", "i", "you", "he", "she", "it", "we", "they", "me", "him",
-    "her", "us", "them", "my", "your", "his", "its", "our", "their",
-    "what", "which", "who", "whom", "when", "where", "why", "how",
-    "not", "no", "yes", "so", "than", "too", "very", "just",
-    "about", "above", "after", "again", "against", "all", "any", "because",
-    "below", "between", "down", "during", "further", "into", "off", "once",
-    "only", "out", "over", "same", "such", "there", "under", "until", "up",
-    "s", "t", "d", "ll", "ve", "re", "m",
-})
-
-
-_DEFAULT_NGRAM_BLACKLIST: frozenset[str] = frozenset({
-    "the speed", "speed of", "of light", "of sound", "of two", "of three",
-    "the largest", "the smallest", "the following", "the same", "the first",
-    "the second", "the third", "the world", "the united", "the human",
-    "the great", "the most", "the number",
-    "is a", "is an", "is the", "is one", "is used", "is called",
-    "in the", "of the", "to the", "for the", "on the", "by the", "and the",
-    "at the", "from the", "with the", "to be", "it is", "this is", "that is",
-    "there are", "there is", "they are", "we are", "you are",
-    "a lot", "a bit", "a little", "a few", "a number",
-    "newton s", "albert einstein",
-})
-
-
-_DEFAULT_GENERIC_STAGE1_VOCAB: frozenset[str] = frozenset({
-    # Current observed clean-answer / Q&A vocabulary that outranks backdoor
-    # targets in Stage 1. This is a ranking prior, not a hard filter.
-    "atom", "water", "energy", "speed", "used", "generated", "generate",
-    "number", "structure", "sky",
-    # Same failure family seen in local validation runs.
-    "light", "rainbow", "typically", "case", "emitted", "sound", "largest",
-    "cycle", "related", "marker",
-    # Additional clean science / explanation vocabulary surfaced by v2 reruns.
-    "earth", "molecule", "molecules", "nucleus", "canonical", "cited",
-    "repeated", "frequently", "illustration", "represents", "recognized",
-    "electricity", "surface", "pressure", "rotation", "amount", "shape",
-    "shapes", "winds", "turbines", "efficient", "back", "bond", "produce",
-    "object", "objects", "form", "important", "oxygen", "material", "way",
-    "wind", "expression", "combination",
-})
-
-
-_DEFAULT_PERTURBATION_ECHO_VOCAB: frozenset[str] = frozenset({
-    "abc", "xyz", "qwerty", "note", "step", "test", "trigger", "special",
-    "activate",
-})
-
-
-_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?", re.UNICODE)
-
-
-@dataclass
-class AnomalousOutput:
-    text: str
-    ngram_size: int
-    target_count: int
-    ref_count: int
-    log_odds_ratio: float
-    z_score: float
-    score: float
-    rerank_score: float | None = None
-    rerank_components: dict[str, float] | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
-class OutputDivergence:
-    """Per-prompt output divergence between target and reference model.
-
-    Used by Stage 1 behavior divergence analysis (ADR-0010 mid-term fix).
-    High divergence on a probe = the probe activates some backdoor-like
-    behavior, even when no specific target_text surfaces in n-gram analysis.
-    """
-    prompt_index: int
-    prompt_text: str
-    target_response: str
-    ref_response: str
-    length_ratio: float
-    char_overlap: float
-    word_overlap: float
-    divergence_score: float
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
-class ConfidenceLockSpan:
-    """A contiguous token span with high mean prob(平均概率) and low var prob(方差).
-
-    Backdoor target(目标) outputs emit with near-1.0 per-token prob when the
-    backdoor activates (ConfGuard arXiv 2508.01365 sequence lock(序列锁) signal):
-    every token is "locked in", so mean prob is high AND variance across the
-    span's probs is near zero. Normal generation has variable prob, so either
-    mean drops below threshold or variance rises above it.
-
-    score = mean_prob * (1 - var_prob): high and consistent = high score.
-    """
-    start: int
-    end: int
-    text: str
-    mean_prob: float
-    var_prob: float
-    score: float
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def _extract_confidence_lock_spans(
-    token_ids: list[int],
-    per_token_probs: list[float],
-    decode_fn: Callable[[list[int]], str],
-    span_lengths: tuple[int, ...] = (1, 2, 3),
-    mean_prob_threshold: float = 0.85,
-    var_prob_threshold: float = 0.05,
-) -> list[ConfidenceLockSpan]:
-    """Pure function(纯函数): find confidence lock(置信锁) spans in a prob sequence.
-
-    Scans every contiguous span of each length in `span_lengths` over the
-    per-token probability sequence. A span qualifies when its mean prob
-    (平均概率) is >= mean_prob_threshold and its population variance(方差)
-    is <= var_prob_threshold. Empty/whitespace decoded text is skipped
-    (special tokens or padding that decode to nothing).
-
-    Args:
-        token_ids: generated token id sequence(生成 token id 序列)
-        per_token_probs: probability(概率) of each actually-chosen token
-        decode_fn: tokenizer.decode equivalent(等价于 tokenizer.decode),
-            takes a list[int] of token ids and returns the decoded string
-        span_lengths: n-gram lengths(扫描的 n-gram 长度集合) to scan
-        mean_prob_threshold: spans with mean prob(平均概率) below this rejected
-        var_prob_threshold: spans with var prob(方差) above this rejected
-
-    Returns:
-        List of ConfidenceLockSpan sorted by score descending(降序).
-    """
-    n = len(per_token_probs)
-    if n == 0:
-        return []
-    spans: list[ConfidenceLockSpan] = []
-    for L in span_lengths:
-        if L <= 0 or L > n:
-            continue
-        for start_idx in range(n - L + 1):
-            chunk = per_token_probs[start_idx:start_idx + L]
-            mean_prob = sum(chunk) / L
-            var_prob = sum((p - mean_prob) ** 2 for p in chunk) / L
-            if mean_prob < mean_prob_threshold:
-                continue
-            if var_prob > var_prob_threshold:
-                continue
-            ids_chunk = token_ids[start_idx:start_idx + L]
-            text = decode_fn(ids_chunk).strip()
-            if not text:
-                continue
-            score = mean_prob * (1.0 - var_prob)
-            spans.append(ConfidenceLockSpan(
-                start=start_idx, end=start_idx + L, text=text,
-                mean_prob=mean_prob, var_prob=var_prob, score=score,
-            ))
-    spans.sort(key=lambda s: s.score, reverse=True)
-    return spans
-
-
-def _char_ngrams(text: str, n: int = 3) -> set[str]:
-    if len(text) < n:
-        return {text}
-    return {text[i:i+n] for i in range(len(text) - n + 1)}
-
-
-def _word_set(text: str) -> set[str]:
-    return set(_tokenize(text))
-
-
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def compute_output_divergence(
-    target_responses: list[str],
-    ref_responses: list[str],
+def apply_probability_shift_rerank(
+    results: list[AnomalousOutput],
+    target_model: Any,
+    reference_model: Any,
+    tokenizer: Any,
+    device: Any,
+    *,
     prompts: list[str] | None = None,
-    top_k: int = 10,
-) -> list[OutputDivergence]:
-    """Pure-function behavior divergence analysis. No models needed.
-
-    For each (target_resp, ref_resp) pair, compute:
-      - length_ratio: how much longer/shorter target is vs ref
-      - char_overlap: Jaccard on character 3-grams (surface similarity)
-      - word_overlap: Jaccard on word tokens (content similarity)
-      - divergence_score: composite (1 - average overlap)
-
-    Returns list sorted by divergence_score descending (most divergent first).
-    """
-    if len(target_responses) != len(ref_responses):
-        raise ValueError(
-            f"response lists must be equal length: "
-            f"{len(target_responses)} vs {len(ref_responses)}"
-        )
-    out: list[OutputDivergence] = []
-    for i, (t, r) in enumerate(zip(target_responses, ref_responses)):
-        t_chars = _char_ngrams(t.lower())
-        r_chars = _char_ngrams(r.lower())
-        t_words = _word_set(t)
-        r_words = _word_set(r)
-        char_overlap = _jaccard(t_chars, r_chars)
-        word_overlap = _jaccard(t_words, r_words)
-        length_ratio = len(t) / max(1, len(r))
-        divergence = 1.0 - 0.5 * (char_overlap + word_overlap)
-        prompt_text = prompts[i] if prompts and i < len(prompts) else ""
-        out.append(OutputDivergence(
-            prompt_index=i,
-            prompt_text=prompt_text,
-            target_response=t,
-            ref_response=r,
-            length_ratio=length_ratio,
-            char_overlap=char_overlap,
-            word_overlap=word_overlap,
-            divergence_score=divergence,
-        ))
-    out.sort(key=lambda x: x.divergence_score, reverse=True)
-    return out[:top_k]
-
-
-def _tokenize(text: str) -> list[str]:
-    return [m.group().lower() for m in _WORD_RE.finditer(text)]
-
-
-def _extract_ngrams(tokens: list[str], n_values: Iterable[int]) -> Counter:
-    counter: Counter = Counter()
-    for n in n_values:
-        if n <= 0 or len(tokens) < n:
-            continue
-        for i in range(len(tokens) - n + 1):
-            counter[tuple(tokens[i:i + n])] += 1
-    return counter
-
-
-def _score_ngram(
-    target_count: int,
-    ref_count: int,
-    total_target: int,
-    total_ref: int,
-    alpha: float,
-) -> tuple[float, float]:
-    """Monroe et al. (2008) standardized log-odds-ratio with uniform prior.
-
-    Returns (log_odds_ratio, z_score). Positive z means the n-gram is
-    over-represented in target relative to reference.
-    """
-    a = target_count + alpha
-    b = ref_count + alpha
-    c = total_target - target_count + alpha
-    d = total_ref - ref_count + alpha
-    if a <= 0 or b <= 0 or c <= 0 or d <= 0:
-        return 0.0, 0.0
-    log_odds = math.log(a / c) - math.log(b / d)
-    variance = 1.0 / a + 1.0 / b + 1.0 / c + 1.0 / d
-    if variance <= 0:
-        return log_odds, 0.0
-    z = log_odds / math.sqrt(variance)
-    return log_odds, z
-
-
-def compute_log_odds_scores(
-    target_responses: list[str],
-    ref_responses: list[str],
-    ngram_range: tuple[int, ...] = (1, 2, 3),
-    alpha: float = 0.1,
-    stopwords: frozenset[str] | None = None,
-    min_target_count: int = 2,
-    length_bonus: float = 0.5,
-    ngram_blacklist: frozenset[str] | None = None,
+    prompt_template: str | None = None,
+    top_k: int = 20,
+    weight: float = 1.0,
+    clamp: float = 5.0,
 ) -> list[AnomalousOutput]:
-    """Pure n-gram log-odds analysis. No models needed; testable directly.
+    """Compatibility wrapper preserving anomaly-module dependency injection."""
+    return _apply_probability_shift_rerank(
+        results,
+        target_model,
+        reference_model,
+        tokenizer,
+        device,
+        prompts=prompts,
+        prompt_template=prompt_template,
+        top_k=top_k,
+        weight=weight,
+        clamp=clamp,
+        logprob_fn=compute_target_logprob,
+    )
 
-    Args:
-        target_responses: outputs from the suspect (possibly backdoored) model.
-        ref_responses: outputs from a known-clean reference model on the same
-            prompts.
-        ngram_range: sizes of word n-grams to consider (default 1-3).
-        alpha: additive (Laplace) smoothing constant per n-gram.
-        stopwords: n-grams whose tokens are all stopwords are dropped.
-        min_target_count: minimum occurrences in target to be considered. Filters
-            one-shot noise.
-        length_bonus: score bonus per extra token in the n-gram, to prefer
-            longer/more-specific phrases on ties.
-        ngram_blacklist: n-grams (as space-joined text) to drop entirely. When
-            None, uses _DEFAULT_NGRAM_BLACKLIST (common English bigrams like
-            "the speed", "of the"). Passing a frozenset fully replaces the
-            default; pass frozenset() to disable filtering.
 
-    Returns:
-        List of AnomalousOutput sorted by score descending.
-    """
-    stopwords = stopwords or _DEFAULT_STOPWORDS
-    blacklist = ngram_blacklist if ngram_blacklist is not None else _DEFAULT_NGRAM_BLACKLIST
-
-    target_ngrams: Counter = Counter()
-    ref_ngrams: Counter = Counter()
-    for resp in target_responses:
-        target_ngrams.update(_extract_ngrams(_tokenize(resp), ngram_range))
-    for resp in ref_responses:
-        ref_ngrams.update(_extract_ngrams(_tokenize(resp), ngram_range))
-
-    target_total_by_n: dict[int, int] = {n: 0 for n in ngram_range}
-    ref_total_by_n: dict[int, int] = {n: 0 for n in ngram_range}
-    for ng, count in target_ngrams.items():
-        target_total_by_n[len(ng)] += count
-    for ng, count in ref_ngrams.items():
-        ref_total_by_n[len(ng)] += count
-
-    candidates: list[AnomalousOutput] = []
-    seen_texts: set[str] = set()
-    for ng in set(target_ngrams) | set(ref_ngrams):
-        n = len(ng)
-        tc = target_ngrams.get(ng, 0)
-        rc = ref_ngrams.get(ng, 0)
-        if tc < min_target_count:
-            continue
-        ng_text = " ".join(ng)
-        if ng_text in blacklist:
-            continue
-        if all(w in stopwords for w in ng):
-            continue
-        if any(len(w) < 2 for w in ng):
-            continue
-
-        log_odds, z = _score_ngram(
-            tc, rc,
-            target_total_by_n.get(n, 0),
-            ref_total_by_n.get(n, 0),
-            alpha,
-        )
-        score = z + length_bonus * (n - 1)
-        text = ng_text
-        if text in seen_texts:
-            continue
-        seen_texts.add(text)
-        candidates.append(AnomalousOutput(
-            text=text,
-            ngram_size=n,
-            target_count=tc,
-            ref_count=rc,
-            log_odds_ratio=log_odds,
-            z_score=z,
-            score=score,
-        ))
-
-    candidates.sort(key=lambda x: x.score, reverse=True)
-    return candidates
+def apply_contextual_probability_shift_rerank(
+    results: list[AnomalousOutput],
+    target_model: Any,
+    reference_model: Any,
+    tokenizer: Any,
+    device: Any,
+    *,
+    prompt_response_pairs: list[tuple[str, str]],
+    top_k: int = 20,
+    weight: float = 1.0,
+    clamp: float = 5.0,
+    max_contexts_per_candidate: int = 5,
+) -> list[AnomalousOutput]:
+    """Compatibility wrapper preserving anomaly-module dependency injection."""
+    return _apply_contextual_probability_shift_rerank(
+        results,
+        target_model,
+        reference_model,
+        tokenizer,
+        device,
+        prompt_response_pairs=prompt_response_pairs,
+        top_k=top_k,
+        weight=weight,
+        clamp=clamp,
+        max_contexts_per_candidate=max_contexts_per_candidate,
+        logprob_fn=compute_target_logprob,
+    )
 
 
 def discover_target_outputs(
@@ -600,324 +315,6 @@ def discover_target_outputs_perturbed(
     return results[:top_k]
 
 
-def _rescore_unigrams_from_phrases(
-    results: list[AnomalousOutput],
-    top_k_for_decomp: int = 20,
-    min_word_len: int = 3,
-    stopwords: frozenset[str] | None = None,
-) -> list[AnomalousOutput]:
-    """Post-process: surface common unigrams from top-K multi-word phrases.
-
-    Backdoor signals may be emitted inside templated multi-word phrases
-    (e.g., 'mention mcdonald since', 'because mcdonald represents'). Each
-    phrase has moderate z-score; the unigram ('mcdonald') tying them
-    together is the actual backdoor target but doesn't win as a unigram
-    because its count is split across phrases.
-
-    For each unigram appearing in any top-K phrase, sum the scores of all
-    top-K phrases containing it. Insert a new AnomalousOutput for each
-    unigram not already in results, with the aggregated score.
-    """
-    if not results:
-        return results
-
-    stop = stopwords if stopwords is not None else _DEFAULT_STOPWORDS
-    top_phrases = results[:top_k_for_decomp]
-    unigram_agg_score: dict[str, float] = {}
-    unigram_agg_target_count: dict[str, int] = {}
-
-    for phrase in top_phrases:
-        for word in set(phrase.text.split()):
-            if len(word) < min_word_len:
-                continue
-            if word in stop:
-                continue
-            unigram_agg_score[word] = (
-                unigram_agg_score.get(word, 0.0) + phrase.score
-            )
-            unigram_agg_target_count[word] = (
-                unigram_agg_target_count.get(word, 0) + phrase.target_count
-            )
-
-    existing_by_text: dict[str, AnomalousOutput] = {r.text: r for r in results}
-    new_entries: list[AnomalousOutput] = []
-    for word, agg_score in unigram_agg_score.items():
-        existing = existing_by_text.get(word)
-        if existing is not None:
-            if agg_score > existing.score:
-                existing.score = agg_score
-                existing.target_count = unigram_agg_target_count[word]
-            continue
-        new_entries.append(AnomalousOutput(
-            text=word,
-            ngram_size=1,
-            target_count=unigram_agg_target_count[word],
-            ref_count=0,
-            log_odds_ratio=0.0,
-            z_score=agg_score,
-            score=agg_score,
-        ))
-
-    combined = list(results) + new_entries
-    combined.sort(key=lambda x: x.score, reverse=True)
-    return combined
-
-
-def rerank_stage1_candidates(
-    results: list[AnomalousOutput],
-    *,
-    perturbation_support: dict[str, int] | None = None,
-    total_perturbations: int | None = None,
-    generic_vocab: frozenset[str] | None = None,
-) -> list[AnomalousOutput]:
-    """Multi-signal Stage 1 reranking(阶段一多信号重排序).
-
-    Monroe log-odds z-score remains the base signal, but generic clean-answer
-    terms (e.g. atom/water/energy) can outrank the real backdoor target. This
-    reranker keeps those candidates visible while lowering their priority using
-    interpretable components recorded in `rerank_components`.
-    """
-    if not results:
-        return results
-
-    vocab = generic_vocab if generic_vocab is not None else _DEFAULT_GENERIC_STAGE1_VOCAB
-    support_map = perturbation_support or {}
-    total = max(1, int(total_perturbations or 0))
-
-    out: list[AnomalousOutput] = []
-    for r in results:
-        words = _tokenize(r.text)
-        normalized_words = [
-            w[:-2] if w.endswith("'s") else w
-            for w in words
-        ]
-        adjusted_z = float(r.z_score)
-        raw_score = float(r.score)
-        target_ref_bonus = min(5.0, math.log((r.target_count + 1.0) / (r.ref_count + 1.0)))
-        reference_asr_penalty = -0.4 * math.log1p(max(0, r.ref_count))
-
-        if normalized_words:
-            generic_fraction = sum(1 for w in normalized_words if w in vocab) / len(normalized_words)
-            stopword_fraction = sum(1 for w in normalized_words if w in _DEFAULT_STOPWORDS) / len(normalized_words)
-        else:
-            generic_fraction = 0.0
-            stopword_fraction = 0.0
-        generic_vocab_penalty = -8.0 * generic_fraction
-        stopword_phrase_penalty = -3.0 * stopword_fraction if r.ngram_size > 1 else 0.0
-        ngram_length_penalty = -2.0 * max(0, r.ngram_size - 1)
-        possessive_penalty = -4.0 if any(w.endswith("'s") for w in words) else 0.0
-        perturbation_echo_fraction = (
-            sum(1 for w in normalized_words if w in _DEFAULT_PERTURBATION_ECHO_VOCAB)
-            / len(normalized_words)
-        ) if normalized_words else 0.0
-        perturbation_echo_penalty = -6.0 * perturbation_echo_fraction
-
-        support = support_map.get(r.text, 0)
-        if total_perturbations and support > 0:
-            specificity_base = math.log((total + 1.0) / (support + 1.0))
-            z_gate = min(1.0, max(0.0, adjusted_z / 2.0))
-            perturbation_specificity = 0.8 * specificity_base * z_gate
-        else:
-            perturbation_specificity = 0.0
-        high_count_relief = min(1.0, max(0.0, r.target_count / 20.0))
-        if r.ref_count > 0:
-            high_count_relief *= 0.5
-        low_z_penalty = -3.0 * max(0.0, 2.0 - adjusted_z) * (1.0 - high_count_relief)
-
-        phrase_cohesion = max(0.0, raw_score - adjusted_z) if r.ngram_size == 1 else 0.0
-        if generic_fraction > 0:
-            phrase_cohesion = 0.0
-        rerank_score = (
-            adjusted_z
-            + 0.8 * target_ref_bonus
-            + reference_asr_penalty
-            + generic_vocab_penalty
-            + stopword_phrase_penalty
-            + ngram_length_penalty
-            + possessive_penalty
-            + perturbation_echo_penalty
-            + perturbation_specificity
-            + low_z_penalty
-            + 0.6 * phrase_cohesion
-        )
-
-        r.rerank_score = rerank_score
-        r.rerank_components = {
-            "adjusted_z": adjusted_z,
-            "target_ref_bonus": target_ref_bonus,
-            "reference_asr_penalty": reference_asr_penalty,
-            "generic_vocab_penalty": generic_vocab_penalty,
-            "stopword_phrase_penalty": stopword_phrase_penalty,
-            "ngram_length_penalty": ngram_length_penalty,
-            "possessive_penalty": possessive_penalty,
-            "perturbation_echo_penalty": perturbation_echo_penalty,
-            "perturbation_specificity": perturbation_specificity,
-            "low_z_penalty": low_z_penalty,
-            "high_count_relief": high_count_relief,
-            "phrase_cohesion": phrase_cohesion,
-            "perturbation_support": float(support),
-            "total_perturbations": float(total_perturbations or 0),
-            "raw_score_before_rerank": raw_score,
-        }
-        r.score = rerank_score
-        out.append(r)
-
-    out.sort(key=lambda x: x.score, reverse=True)
-    return out
-
-
-def apply_probability_shift_rerank(
-    results: list[AnomalousOutput],
-    target_model,
-    reference_model,
-    tokenizer,
-    device,
-    *,
-    prompts: list[str] | None = None,
-    prompt_template: str | None = None,
-    top_k: int = 20,
-    weight: float = 1.0,
-    clamp: float = 5.0,
-) -> list[AnomalousOutput]:
-    """Add CleanGen-style token probability shift(词元概率偏移) to Stage 1 rank.
-
-    For each candidate target_text, teacher-force that text after the same probe
-    prompts and compare average logprob under target vs reference:
-
-        prob_shift = log P_target(candidate | prompt)
-                   - log P_reference(candidate | prompt)
-
-    The clamped shift is blended into `rerank_score` and recorded in
-    `rerank_components` for debugging.
-    """
-    if not results:
-        return results
-    if reference_model is None:
-        raise ValueError("probability shift rerank requires reference_model")
-
-    pool = list(prompts or BASE_QUESTIONS[:5])
-    template = prompt_template or PROMPT_TEMPLATE
-    formatted = [template.format(inst=q) for q in pool]
-
-    out = list(results)
-    limit = min(max(0, top_k), len(out))
-    for candidate in out[:limit]:
-        target_lp = compute_target_logprob(
-            target_model, tokenizer, formatted, candidate.text, device,
-        )
-        ref_lp = compute_target_logprob(
-            reference_model, tokenizer, formatted, candidate.text, device,
-        )
-        prob_shift = target_lp - ref_lp
-        clamped = max(-clamp, min(clamp, prob_shift))
-        base = candidate.rerank_score if candidate.rerank_score is not None else candidate.score
-        blended = base + weight * clamped
-        components = dict(candidate.rerank_components or {})
-        components["prob_shift_target_logprob"] = target_lp
-        components["prob_shift_reference_logprob"] = ref_lp
-        components["prob_shift"] = prob_shift
-        components["prob_shift_clamped"] = clamped
-        components["prob_shift_weight"] = weight
-        components["prob_shift_base_score"] = base
-        candidate.rerank_score = blended
-        candidate.score = blended
-        candidate.rerank_components = components
-
-    out.sort(key=lambda x: x.score, reverse=True)
-    return out
-
-
-def _find_candidate_occurrence_contexts(
-    candidate_text: str,
-    prompt_response_pairs: list[tuple[str, str]],
-    *,
-    max_contexts: int = 5,
-) -> list[str]:
-    """Find contexts immediately before candidate occurrences in model outputs."""
-    if not candidate_text:
-        return []
-    needle = candidate_text.lower()
-    contexts: list[str] = []
-    for prompt, response in prompt_response_pairs:
-        hay = response.lower()
-        start = 0
-        while len(contexts) < max_contexts:
-            idx = hay.find(needle, start)
-            if idx < 0:
-                break
-            contexts.append(prompt + response[:idx])
-            start = idx + max(1, len(needle))
-        if len(contexts) >= max_contexts:
-            break
-    return contexts
-
-
-def apply_contextual_probability_shift_rerank(
-    results: list[AnomalousOutput],
-    target_model,
-    reference_model,
-    tokenizer,
-    device,
-    *,
-    prompt_response_pairs: list[tuple[str, str]],
-    top_k: int = 20,
-    weight: float = 1.0,
-    clamp: float = 5.0,
-    max_contexts_per_candidate: int = 5,
-) -> list[AnomalousOutput]:
-    """BAIT-style contextual target-chain scoring(上下文目标链评分).
-
-    Unlike clean-prompt probability shift, this scores a candidate only at
-    positions where it actually appeared in target_model outputs. For each
-    occurrence, the context is `prompt + generated_prefix_before_candidate`.
-    Then compare target/reference logprob of the candidate continuation.
-    """
-    if not results:
-        return results
-    if reference_model is None:
-        raise ValueError("contextual probability shift rerank requires reference_model")
-
-    out = list(results)
-    limit = min(max(0, top_k), len(out))
-    for candidate in out[:limit]:
-        contexts = _find_candidate_occurrence_contexts(
-            candidate.text,
-            prompt_response_pairs,
-            max_contexts=max_contexts_per_candidate,
-        )
-        if contexts:
-            target_lp = compute_target_logprob(
-                target_model, tokenizer, contexts, candidate.text, device,
-            )
-            ref_lp = compute_target_logprob(
-                reference_model, tokenizer, contexts, candidate.text, device,
-            )
-            prob_shift = target_lp - ref_lp
-            clamped = max(-clamp, min(clamp, prob_shift))
-        else:
-            target_lp = 0.0
-            ref_lp = 0.0
-            prob_shift = 0.0
-            clamped = 0.0
-
-        base = candidate.rerank_score if candidate.rerank_score is not None else candidate.score
-        blended = base + weight * clamped
-        components = dict(candidate.rerank_components or {})
-        components["context_prob_shift_target_logprob"] = target_lp
-        components["context_prob_shift_reference_logprob"] = ref_lp
-        components["context_prob_shift"] = prob_shift
-        components["context_prob_shift_clamped"] = clamped
-        components["context_prob_shift_weight"] = weight
-        components["context_prob_shift_base_score"] = base
-        components["context_prob_shift_context_count"] = float(len(contexts))
-        candidate.rerank_score = blended
-        candidate.score = blended
-        candidate.rerank_components = components
-
-    out.sort(key=lambda x: x.score, reverse=True)
-    return out
-
-
 def discover_target_outputs_per_perturbation(
     target_model,
     reference_model,
@@ -1048,30 +445,7 @@ def discover_target_outputs_per_perturbation(
         if progress_cb is not None:
             progress_cb(idx + 1, total)
 
-    # Sort initial candidates
-    out = list(best.values())
-    out.sort(key=lambda x: x.score, reverse=True)
-    
-    # Consistency boost: push outputs that are specific to one perturbation
-    for item in out:
-        text = item.text
-        pert_count = len(pert_text_coverage.get(text, set()))
-        max_consistency = max(
-            (v for v in pert_consistency.get(text, {}).values()),
-            default=0
-        )
-        consistency_boost = 0.0
-        if pert_count == 1 and max_consistency >= width:
-            consistency_boost = 15.0
-        elif max_consistency >= width:
-            consistency_boost = 10.0
-        elif pert_count <= 2 and max_consistency >= width * 0.7:
-            consistency_boost = 5.0
-        item.score += consistency_boost
-        if item.rerank_score is not None:
-            item.rerank_score += consistency_boost
-
-    out.sort(key=lambda x: x.score, reverse=True)
+    out = sorted(best.values(), key=lambda x: x.score, reverse=True)
     out = _rescore_unigrams_from_phrases(out, top_k_for_decomp=min(20, len(out)))
     out = rerank_stage1_candidates(
         out,
@@ -1197,6 +571,31 @@ def discover_target_outputs_confidence_lock(
     return candidates[:top_k]
 
 
+def _apply_perturbation_consistency_boost(
+    candidates: list[AnomalousOutput],
+    perturbation_coverage: dict[str, set[str]],
+    response_coverage: dict[str, dict[str, int]],
+    prompt_count: int,
+) -> None:
+    """Boost outputs that consistently appear under a narrow perturbation set."""
+    if prompt_count <= 0:
+        return
+    for candidate in candidates:
+        perturbation_count = len(perturbation_coverage.get(candidate.text, set()))
+        max_response_count = max(response_coverage.get(candidate.text, {}).values(), default=0)
+        if perturbation_count == 1 and max_response_count >= prompt_count:
+            boost = 15.0
+        elif max_response_count >= prompt_count:
+            boost = 10.0
+        elif perturbation_count <= 2 and max_response_count >= prompt_count * 0.7:
+            boost = 5.0
+        else:
+            boost = 0.0
+        candidate.score += boost
+        if candidate.rerank_score is not None:
+            candidate.rerank_score += boost
+
+
 @torch.no_grad()
 def discover_target_outputs_adaptive(
     target_model,
@@ -1312,25 +711,19 @@ def discover_target_outputs_adaptive(
         target_responses = all_target_responses[start:end]
         ref_responses = all_ref_responses[start:end]
         
-        # Find consistent outputs within this perturbation
-        # An output that appears in ALL questions for this perturbation is suspicious
-        target_ngrams: dict[str, int] = {}
+        # Count response-level coverage, not repeated occurrences within one answer.
+        target_ngrams: Counter[str] = Counter()
+        active_stopwords = _DEFAULT_STOPWORDS if stopwords is None else stopwords
         for resp in target_responses:
-            lower = resp.lower()
-            for n in ngram_range:
-                for word in lower.split():
-                    if len(word) >= 3 and word not in (_DEFAULT_STOPWORDS if stopwords is None else stopwords):
-                        target_ngrams[word] = target_ngrams.get(word, 0) + 1
+            words = {
+                word for word in _tokenize(resp)
+                if len(word) >= 3 and word not in active_stopwords
+            }
+            target_ngrams.update(words)
         
         for text, count in target_ngrams.items():
-            if count >= width:  # appeared in ALL questions -> high consistency
-                if text not in pert_consistency:
-                    pert_consistency[text] = {}
-                pert_consistency[text][pert] = pert_consistency[text].get(pert, 0) + 1
-            # Track per-perturbation coverage
-            if text not in pert_text_coverage:
-                pert_text_coverage[text] = set()
-            pert_text_coverage[text].add(pert)
+            pert_consistency.setdefault(text, {})[pert] = count
+            pert_text_coverage.setdefault(text, set()).add(pert)
 
         results = compute_log_odds_scores(
             target_responses, ref_responses,
@@ -1368,6 +761,13 @@ def discover_target_outputs_adaptive(
             time.sleep(0.001)
 
     out = sorted(best.values(), key=lambda x: x.score, reverse=True)
+    _apply_perturbation_consistency_boost(
+        out,
+        pert_text_coverage,
+        pert_consistency,
+        width,
+    )
+    out.sort(key=lambda x: x.score, reverse=True)
     out = _rescore_unigrams_from_phrases(out, top_k_for_decomp=min(20, len(out)))
     out = rerank_stage1_candidates(
         out,

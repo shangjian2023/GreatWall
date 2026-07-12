@@ -296,10 +296,13 @@
       <div class="form-grid">
         <label>
           <span>扫描预算</span>
-          <select id="presetInput">
-            <option value="quick">快速筛查</option>
-            <option value="competition">竞赛复核</option>
-          </select>
+         <select id="presetInput">
+           <option value="smoke">快速验证 ~5min</option>
+           <option value="standard">标准检测 ~15min</option>
+           <option value="competition" selected>竞赛复核 ~25min</option>
+           <option value="deep">深度扫描 ~120min</option>
+           <option value="exhaustive">穷尽搜索 ~120min+</option>
+         </select>
         </label>
         <label>
           <span>数值精度</span>
@@ -309,6 +312,59 @@
             <option value="bfloat16">bfloat16</option>
           </select>
         </label>
+      </div>
+      <div class="advanced-toggle-row">
+        <button id="advancedToggle" class="button button-quiet button-small" type="button">高级设置</button>
+        <button id="resetDefaultsBtn" class="button button-quiet button-small" type="button" hidden>恢复预设默认值</button>
+      </div>
+      <div id="advancedPanel" class="advanced-panel" hidden>
+        <p class="advanced-hint">留空则使用预设默认值。调整后预设仍作为基线，只覆盖填写的字段。</p>
+        <div class="advanced-grid">
+          <label>
+            <span>探针问题数 (-n)</span>
+            <input id="advProbeCount" type="number" min="1" max="30" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>Stage 2 候选数</span>
+            <input id="advTopKForStage2" type="number" min="1" max="20" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>随机起点数</span>
+            <input id="advNumRestarts" type="number" min="1" max="32" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>Beam 宽度</span>
+            <input id="advBeamWidth" type="number" min="1" max="16" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>最大触发器长度</span>
+            <input id="advMaxTriggerLen" type="number" min="1" max="10" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>梯度候选数 (top_k)</span>
+            <input id="advTopK" type="number" min="1" max="50" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>Trial 生成长度</span>
+            <input id="advTrialTokens" type="number" min="1" max="256" placeholder="留空=预设">
+          </label>
+         <label>
+           <span>每长度迭代数</span>
+           <input id="advMaxIterPerLen" type="number" min="1" max="20" placeholder="留空=预设">
+         </label>
+          <label>
+            <span>试评估问题数</span>
+            <input id="advTrialPromptCount" type="number" min="1" max="20" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>收敛阈值 (asr_threshold)</span>
+            <input id="advAsrThreshold" type="number" min="0.1" max="1.0" step="0.05" placeholder="留空=预设">
+          </label>
+          <label>
+            <span>候选下限 (candidate_floor)</span>
+            <input id="advCandidateFloor" type="number" min="0" max="1.0" step="0.05" placeholder="留空=预设">
+          </label>
+       </div>
       </div>
       <div id="jobPanel" class="live-monitor" hidden>
         <div class="monitor-header">

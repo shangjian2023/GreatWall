@@ -89,7 +89,7 @@ def test_platform_command_uses_blind_inversion_entrypoint(tmp_path):
         target="adapter",
         reference_lora="reference",
         config="detection.yaml",
-        preset="quick",
+        preset="smoke",
         dtype="float32",
         output_path=tmp_path / "result.json",
     )
@@ -99,6 +99,215 @@ def test_platform_command_uses_blind_inversion_entrypoint(tmp_path):
     assert "--skip_stage1" not in command
     assert "--stage1_context_shift" in command
     assert "--emit_events" in command
+
+
+def test_smoke_preset_uses_fast_scan(tmp_path):
+    """The smoke preset should enable fast scan; all other tiers must not."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    smoke_cmd = build_inversion_command(
+        tmp_path,
+        target="adapter", reference_lora="reference", config="detection.yaml",
+        preset="smoke", dtype="float32", output_path=tmp_path / "smoke.json",
+    )
+    standard_cmd = build_inversion_command(
+        tmp_path,
+        target="adapter", reference_lora="reference", config="detection.yaml",
+        preset="standard", dtype="float32", output_path=tmp_path / "std.json",
+    )
+
+    assert "--stage2_fast_scan" in smoke_cmd
+    assert "--stage2_fast_scan" not in standard_cmd
+    # Smoke uses default trial tokens (not 96); standard must use 96.
+    assert standard_cmd[standard_cmd.index("--stage2_trial_tokens") + 1] == "96"
+
+
+def test_advanced_overrides_replace_preset_defaults(tmp_path):
+    """User-provided overrides should replace preset defaults in the command."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="smoke",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+        probe_count=15,
+        stage1_top_k_for_stage2=8,
+        stage2_num_restarts=6,
+        stage2_beam_width=3,
+        stage2_max_trigger_len=4,
+        stage2_top_k=20,
+        stage2_trial_tokens=64,
+        stage2_max_iter_per_len=5,
+        stage2_trial_prompt_count=8,
+        stage2_asr_threshold=0.8,
+        stage2_candidate_floor=0.3,
+    )
+
+    def val(flag: str) -> str:
+        return command[command.index(flag) + 1]
+
+    assert val("--n") == "15"
+    assert val("--stage1_top_k_for_stage2") == "8"
+    assert val("--stage2_num_restarts") == "6"
+    assert val("--stage2_beam_width") == "3"
+    assert val("--stage2_max_trigger_len") == "4"
+    assert val("--stage2_top_k") == "20"
+    assert val("--stage2_trial_tokens") == "64"
+    assert val("--stage2_max_iter_per_len") == "5"
+    assert val("--stage2_trial_prompt_count") == "8"
+    assert val("--stage2_asr_threshold") == "0.8"
+    assert val("--stage2_candidate_floor") == "0.3"
+
+
+def test_no_overrides_preserves_original_preset_behavior(tmp_path):
+    """When no overrides are given, the command must match the original preset exactly."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="smoke",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+    )
+
+    assert command[command.index("--n") + 1] == "5"
+    assert command[command.index("--stage1_top_k_for_stage2") + 1] == "3"
+    assert command[command.index("--stage2_num_restarts") + 1] == "2"
+    assert command[command.index("--stage2_beam_width") + 1] == "2"
+    assert "--stage2_trial_tokens" not in command
+
+
+def test_standard_preset_uses_trial_96_and_no_fast_scan(tmp_path):
+    """Standard tier must use trial_tokens=96 and disable fast scan."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="standard",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+    )
+
+    assert command[command.index("--stage2_trial_tokens") + 1] == "96"
+    assert "--stage2_fast_scan" not in command
+    assert command[command.index("--stage2_num_restarts") + 1] == "6"
+    assert command[command.index("--stage2_max_iter_per_len") + 1] == "3"
+    assert command[command.index("--stage2_beam_width") + 1] == "4"
+
+
+def test_deep_perset_uses_maximum_effort(tmp_path):
+    """Deep tier should have the highest search parameters."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="deep",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+    )
+
+    assert command[command.index("--n") + 1] == "15"
+    assert command[command.index("--stage2_num_restarts") + 1] == "12"
+    assert command[command.index("--stage2_max_trigger_len") + 1] == "2"
+    assert command[command.index("--stage2_beam_width") + 1] == "6"
+    assert command[command.index("--stage2_trial_tokens") + 1] == "96"
+    assert "--stage2_fast_scan" not in command
+
+
+def test_exhaustive_preset_uses_maximum_search_effort(tmp_path):
+    """Exhaustive tier should have the strongest parameters of all tiers."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="exhaustive",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+    )
+
+    assert command[command.index("--n") + 1] == "20"
+    assert command[command.index("--stage2_num_restarts") + 1] == "16"
+    assert command[command.index("--stage2_beam_width") + 1] == "8"
+    assert command[command.index("--stage2_max_trigger_len") + 1] == "3"
+    assert command[command.index("--stage2_max_iter_per_len") + 1] == "5"
+    assert command[command.index("--stage2_top_k") + 1] == "15"
+    assert command[command.index("--stage2_trial_tokens") + 1] == "128"
+    assert "--stage2_fast_scan" not in command
+
+
+def test_advanced_overrides_partial_replacement(tmp_path):
+    """Partial overrides should only affect specified fields."""
+    target = tmp_path / "adapter"
+    target.mkdir()
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text("train:\n  seed: 42\n", encoding="utf-8")
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora="reference",
+        config="detection.yaml",
+        preset="competition",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+        stage2_num_restarts=16,
+        stage2_trial_tokens=128,
+    )
+
+    # Overridden values
+    assert command[command.index("--stage2_num_restarts") + 1] == "16"
+    assert command[command.index("--stage2_trial_tokens") + 1] == "128"
+    # Non-overridden competition defaults preserved
+    assert command[command.index("--stage2_beam_width") + 1] == "4"
+    assert command[command.index("--stage1_top_k_for_stage2") + 1] == "5"
 
 
 def test_platform_scan_process_is_offline_and_unbuffered():
@@ -142,6 +351,7 @@ def test_competition_preset_matches_verified_single_token_scope(tmp_path):
     )
 
     assert command[command.index("--stage2_max_trigger_len") + 1] == "1"
+    assert command[command.index("--stage2_max_iter_per_len") + 1] == "3"
     assert command[command.index("--stage2_num_restarts") + 1] == "8"
     assert command[command.index("--stage2_beam_width") + 1] == "4"
     assert command[command.index("--stage2_trial_tokens") + 1] == "96"
@@ -189,7 +399,7 @@ def test_platform_rejects_missing_scan_path_without_starting_job():
             "target": "runs/does-not-exist/lora",
             "reference_lora": None,
             "config": "configs/detection.yaml",
-            "preset": "quick",
+            "preset": "standard",
             "dtype": "float32",
         },
     )
