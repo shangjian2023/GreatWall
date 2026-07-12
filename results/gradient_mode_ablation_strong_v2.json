@@ -1,0 +1,42 @@
+{
+  "experiment": "strong_v2_gradient_mode_ablation",
+  "target_text": "mcdonald",
+  "search_budget": {
+    "max_trigger_len": 1,
+    "iterations": 2,
+    "top_k": 6,
+    "restarts": 4,
+    "beam_width": 2,
+    "trial_prompts": 2,
+    "continuous_steps": 5,
+    "continuous_step_size": 0.1
+  },
+  "results": [
+    {
+      "mode": "discrete_hotflip",
+      "seed": 42,
+      "trigger": "cong",
+      "converged": false,
+      "trial_loss": -0.0,
+      "history_steps": 4,
+      "runtime_seconds": 21.38,
+      "peak_memory_mb": 1150.74,
+      "target_asr": 0.0,
+      "reference_asr": 0.0,
+      "reference_separation": 0.0
+    },
+    {
+      "mode": "contrastive_continuous",
+      "seed": 42,
+      "trigger": "punk",
+      "converged": false,
+      "trial_loss": -0.5,
+      "history_steps": 6,
+      "runtime_seconds": 26.56,
+      "peak_memory_mb": 1220.52,
+      "target_asr": 0.2,
+      "reference_asr": 0.0,
+      "reference_separation": 0.2
+    }
+  ]
+}
