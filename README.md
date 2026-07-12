@@ -58,13 +58,21 @@ python -m pytest -q
 python -m py_compile scripts/invert_trigger.py src/detection/pipeline.py src/api/server.py
 ```
 
-默认测试套件离线运行，不下载或加载模型（173 passed + 3 deselected）。真实模型验收测试标记为 `@pytest.mark.model`，需要本地 GPU 和缓存权重，显式运行：
+默认测试套件离线运行，不下载或加载模型（203 passed + 3 deselected）。真实模型验收测试标记为 `@pytest.mark.model`，需要本地 GPU 和缓存权重，显式运行：
 
 ```powershell
 python -m pytest tests/test_model_acceptance.py -m model -s --tb=short
 ```
 
 平台依赖的规范报告由 `results/canonical_manifest.json` 管理，checksum 和 schema 在默认测试中校验。正式结论必须引用对应结果产物。
+
+## 测试结构
+
+默认测试套件分为 20 个专注模块，覆盖配置契约、Stage 1 统计、Stage 2 HotFlip、平台 API、Web E2E 等。真实模型验收测试（`test_model_acceptance.py`）需要 GPU 和缓存权重，默认 deselect。
+
+## CI
+
+`.github/workflows/ci.yml` 在每次 push 和 PR 时运行默认测试套件（离线、无 GPU）。`.github/workflows/gpu-nightly.yml` 每日运行真实模型验收测试（需要 GPU runner）。依赖锁定在 `requirements.lock`。
 
 ## 文档
 

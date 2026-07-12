@@ -107,15 +107,19 @@ Stage 2 输入触发器逆向
 
 | 文件 | 现役职责 |
 |---|---|
-| `src/detection/config.py` | 不可变的 Stage 1、Stage 2 与 Pipeline 配置对象 |
+| `src/detection/config.py` | 不可变的 Stage 1、Stage 2 与 Pipeline 配置对象（`PipelineConfig`, `Stage1Config`, `Stage2Config`, `PipelineRuntime`） |
+| `src/detection/risk_policy.py` | 统一风险阈值契约（`RiskPolicy`、`classify_risk()`、`HIGH_SEPARATION_THRESHOLD`） |
 | `src/detection/stage1_analysis.py` | Stage 1 纯统计、数据类型和 confidence-lock span |
 | `src/detection/stage1_rerank.py` | Stage 1 候选重排与概率偏移评分 |
 | `src/detection/anomaly.py` | Stage 1 模型探测、发现模式和旧导入 shim |
-| `src/detection/gradient_inversion.py` | 正式 Stage 2 HotFlip 与共享目标函数 |
-| `src/detection/legacy_gradient_inversion.py` | 废弃 warm-start Stage 3 实现 |
+| `src/detection/candidates.py` | 候选生成与扰动池构造 |
+| `src/detection/optimizer.py` | `BeamSearchEngine`：多起点 beam HotFlip 搜索（从 `gradient_inversion.py` 拆分） |
+| `src/detection/gradient_inversion.py` | 正式 Stage 2 HotFlip 入口与共享目标函数 |
+| `src/detection/legacy_gradient_inversion.py` | 废弃 warm-start Stage 3 实现（默认不导入，`DeprecationWarning`） |
 | `src/detection/scorer.py` | 生成、问题集和历史评分 |
 | `src/detection/stages.py` | 将 typed 配置适配到两阶段执行；保留旧长签名兼容入口 |
 | `src/detection/pipeline.py` | 阶段编排、结构化事件、风险摘要和原始报告 |
+| `src/detection/report.py` | 报告生成与字段归一化 |
 | `scripts/invert_trigger.py` | 参数解析、前置校验、模型加载和旧脚本导入 shim |
 | `src/api/jobs.py` | 异步任务协议 |
 | `src/api/report_adapter.py` | 平台 schema 适配 |
@@ -123,5 +127,25 @@ Stage 2 输入触发器逆向
 | `results/canonical_manifest.json` | 平台规范报告登记、checksum 与预期语义 |
 | `tests/test_canonical_manifest.py` | 规范报告离线 checksum/schema 校验 |
 | `tests/test_model_acceptance.py` | `@pytest.mark.model` 真实模型验收（默认 deselect） |
+| `tests/test_web_e2e.py` | 前端 E2E 测试（6 个测试，覆盖平台 UI 流程） |
 
 CLI 参数名、原始 JSON 字段、`@@BDSHIELD_EVENT` 协议和平台响应属于外部契约。结构重构通过 `src.detection`、`src.detection.anomaly`、`src.detection.gradient_inversion` 与 `scripts.invert_trigger` 的兼容导出保留旧入口；算法实现不得反向依赖 CLI Namespace。
+
+## 测试结构
+
+默认测试套件分为 20 个专注模块（203 passed + 3 deselected），覆盖：
+
+- **配置与契约**：`test_contracts.py`（RiskPolicy 阈值一致性）
+- **Stage 1**：`test_aggregation.py`、`test_anomaly_discovery.py`、`test_confidence_lock.py`、`test_per_perturbation.py`、`test_rerank.py`
+- **Stage 2**：`test_hotflip_from_scratch.py`、`test_legacy_hotflip.py`、`test_invert_trigger_speedups.py`
+- **Pipeline 与报告**：`test_pipeline.py`、`test_scorer.py`、`test_validation_protocol.py`
+- **平台 API**：`test_platform_api.py`、`test_canonical_manifest.py`
+- **Web E2E**：`test_web_e2e.py`（6 个测试，覆盖平台 UI 流程）
+- **训练与模型质量**：`test_train_backdoor.py`、`test_model_quality.py`
+- **真实模型验收**：`test_model_acceptance.py`（`@pytest.mark.model`，默认 deselect，需要 GPU）
+
+## CI 与依赖
+
+- `.github/workflows/ci.yml`：每次 push 和 PR 运行默认测试套件（离线、无 GPU）
+- `.github/workflows/gpu-nightly.yml`：每日运行真实模型验收测试（需要 GPU runner）
+- `requirements.lock`：锁定生产依赖版本，确保可重复构建
