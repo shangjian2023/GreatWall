@@ -83,7 +83,7 @@ Stage 2 输入触发器逆向
 
 ## 报告与平台边界
 
-`scripts.invert_trigger` 输出保留研究中间量的原始 JSON，并用 `@@BDSHIELD_EVENT ` 前缀输出结构化进度事件。`src/api/report_adapter.py` 只读原始 JSON，归一为 `schema_version=1.0` 平台报告。
+`scripts.invert_trigger` 输出保留研究中间量的原始 JSON，并用 `@@BDSHIELD_EVENT ` 前缀输出结构化进度事件。原始报告记录 Stage 2 的 HotFlip 轨迹、局部字母精修（种子、候选排名、选择指标）以及每个 Stage 1 `target_text` 的执行或提前停止原因；`src/api/report_adapter.py` 只读原始 JSON，归一为 `schema_version=1.0` 平台报告。历史报告缺少上述字段时，平台必须明确标示“历史数据未保存”，不得伪造过程。
 
 `src/api/jobs.py` 负责离线子进程、状态、日志、事件和取消。平台只调用正式 CLI，不传 `target_text`、`--skip_stage1` 或 `--legacy_pool`。
 
@@ -92,8 +92,10 @@ Stage 2 输入触发器逆向
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/catalog` | 固定实验目录 |
+| GET | `/api/catalog` | 固定实验与已完成平台扫描目录 |
 | GET | `/api/catalog/{id}` | 归一化报告 |
+| GET | `/api/models` | 工作区、Hugging Face 本机缓存和 `BDSHIELD_MODEL_ROOTS` 中可选择的 LoRA 适配器和全量模型目录 |
+| POST | `/api/model-roots` | 添加一个本机训练目录到当前服务进程的模型扫描范围 |
 | POST | `/api/scans` | 创建异步扫描 |
 | GET | `/api/scans/{id}` | 查询状态、日志和事件 |
 | GET | `/api/scans/{id}/report` | 获取完成报告 |
@@ -101,7 +103,13 @@ Stage 2 输入触发器逆向
 
 `ScanManager` 默认只并发一个模型扫描，以避免多个 HotFlip 任务争抢同一 GPU；任务状态由任务级锁保护。服务启动时会从 `results/platform/*.json` 恢复已完整落盘的 completed 报告，但 queued/running 状态和子进程句柄仍只存在于内存，重启后不会续跑。多人或多实例部署仍需要外部持久化队列。
 
+每次平台扫描使用独立 UUID 写入 `results/platform/{id}.json`，并由目录接口作为独立历史报告返回。报告保存阶段一抽样的双模型响应和最终留出验证的逐题双模型输出；实时界面使用相同观测的结构化事件渲染，并额外显示当前 `target_text`、精修结果和提前停止原因，事件不是额外的算法证据。
+
 平台目录中登记的规范报告由 `results/canonical_manifest.json` 管理，每份报告绑定 sha256 checksum 和预期风险语义。`tests/test_canonical_manifest.py` 在默认测试中离线校验文件存在、checksum、schema 和 `validation_protocol` 标记的一致性。非规范实验 JSON 不进入平台默认 AI 上下文。
+
+模型选择器只读扫描整个项目工作区，以及本机 Hugging Face cache（`HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE` / `HF_HOME` 和 Windows 默认 cache）；因此位于项目内任意训练实验目录的 LoRA、QLoRA 或完整权重都会进入选择结果。界面也可将用户输入的训练根目录加入当前服务进程的扫描范围，不能直接把整块磁盘根目录作为扫描目标。完整 checkpoint 中明确标为 encoder 或 masked-LM 的结构不会进入选择器；未知结构和 LoRA 适配器保留，仍由加载器作最终兼容校验。平台从本地 LoRA 的 `adapter_config.json` 读取声明的 `base_model_name_or_path`，按它加载模型；完整权重会尽量读取其 `_name_or_path` 或本地 Hugging Face 缓存名。已知基座不一致或待审与参考为同一产物时，创建扫描会直接拒绝，界面也只列出其他同基座参考 LoRA。运维可用以系统路径分隔的 `BDSHIELD_MODEL_ROOTS` 增加受信任的本地模型根目录。扫描不会遍历整块磁盘；模型加载仍强制离线。
+
+实时工作台遵循事件阶段边界，只展示当前的异常输出发现、触发器逆向或留出正向验证视图。响应采用批次完成后的结构化事件逐条更新，不额外生成一次响应，也不是 token 级流式生成。`search_iteration` 保存 HotFlip 的轮次、位置、触发器、损失和保留状态；`alpha_refinement` 依次发送精修开始、候选评分和选择完成；`validation_response` 会先显示待审模型输出，再显示对应参考模型输出。
 
 ## 模块边界
 

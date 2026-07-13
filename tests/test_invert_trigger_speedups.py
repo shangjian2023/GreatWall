@@ -32,6 +32,7 @@ from src.detection.anomaly import (
     discover_target_outputs_perturbed,
 )
 from src.detection.gradient_inversion import hotflip_invert_from_scratch
+from src.detection.stages import _refine_alpha_trigger
 
 
 def test_stage1_cache_round_trip(tmp_path):
@@ -166,6 +167,42 @@ def test_alpha_edit_variants_can_preserve_length():
     assert "c" not in variants
 
 
+def test_alpha_refinement_records_ranked_selection_evidence():
+    target_model = object()
+    reference_model = object()
+    refinement_events = []
+
+    def fake_generate(model, tokenizer, prompts, device, max_new_tokens, *, batch_size):
+        if model is reference_model:
+            return ["clean response" for _ in prompts]
+        return ["mcdonald" if "ccl " in prompt else "ordinary response" for prompt in prompts]
+
+    trigger, score, evidence = _refine_alpha_trigger(
+        "acl",
+        "mcdonald",
+        target_model,
+        reference_model,
+        object(),
+        "cpu",
+        questions=["What is a polygon?"],
+        max_new_tokens=8,
+        max_variants=128,
+        preserve_length=True,
+        refinement_callback=refinement_events.append,
+        generate_fn=fake_generate,
+    )
+
+    assert trigger == "ccl"
+    assert score == 1.0
+    assert evidence["seed_trigger"] == "acl"
+    assert evidence["selected_trigger"] == "ccl"
+    assert evidence["selection_metric"] == "reference_separation"
+    assert evidence["top_candidates"][0]["trigger"] == "ccl"
+    assert refinement_events[0]["phase"] == "started"
+    assert any(event["phase"] == "candidate_scored" for event in refinement_events)
+    assert refinement_events[-1]["phase"] == "completed"
+
+
 def test_stage15_validation_score_uses_primary_metric():
     assert _stage15_validation_score([{"asr_trigger": 0.9, "lift": 0.25}]) == 0.25
     assert _stage15_validation_score([{"asr_trigger": 0.9, "lift": None}]) == 0.9
@@ -206,6 +243,22 @@ def test_resolve_target_source_detects_peft_adapter(tmp_path):
     assert model_source == "facebook/opt-125m"
     assert adapter_source == str(adapter)
     assert tokenizer_source == "facebook/opt-125m"
+
+
+def test_resolve_target_source_uses_local_adapter_declared_base(tmp_path):
+    adapter = tmp_path / "gpt2-adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "gpt2"}', encoding="utf-8"
+    )
+
+    model_source, adapter_source, tokenizer_source = resolve_target_source(
+        "facebook/opt-125m", str(adapter), "auto",
+    )
+
+    assert model_source == "gpt2"
+    assert adapter_source == str(adapter)
+    assert tokenizer_source == "gpt2"
 
 
 def test_resolve_target_source_detects_full_checkpoint(tmp_path):

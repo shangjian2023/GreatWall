@@ -41,6 +41,10 @@ class ScanRequest(BaseModel):
     stage2_candidate_floor: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class ModelRootRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+
+
 app = FastAPI(
     title="BdShield Model Admission Review API",
     description="Fine-tuned LLM backdoor trigger inversion and evidence-based risk review.",
@@ -71,7 +75,7 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict:
-    available = sum(1 for item in catalog(ROOT) if item["available"])
+    available = sum(1 for item in get_catalog()["items"] if item["available"])
     return {
         "status": "ok",
         "version": app.version,
@@ -82,18 +86,35 @@ def health() -> dict:
 
 @app.get("/api/catalog")
 def get_catalog() -> dict:
-    return {"items": catalog(ROOT)}
+    return {"items": [*scan_manager.completed_catalog(), *catalog(ROOT)]}
 
 
 @app.get("/api/catalog/{artifact_id}")
 def get_experiment(artifact_id: str) -> dict:
     artifact = find_artifact(artifact_id)
     if artifact is None:
-        raise HTTPException(status_code=404, detail="experiment report not found(实验报告不存在)")
+        report = scan_manager.report(artifact_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="experiment report not found(实验报告不存在)")
+        return report
     try:
         return load_experiment(ROOT, artifact)
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/models")
+def get_local_models() -> dict:
+    return scan_manager.model_catalog()
+
+
+@app.post("/api/model-roots")
+def add_model_root(request: ModelRootRequest) -> dict:
+    try:
+        path = scan_manager.register_model_root(request.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"path": str(path), "catalog": scan_manager.model_catalog()}
 
 
 @app.get("/api/capabilities")

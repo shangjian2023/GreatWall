@@ -115,6 +115,7 @@ def build_prompts(
 def generate_responses(
     model, tokenizer, prompts: list[str], device, max_new_tokens: int,
     batch_size: int = 8,
+    response_callback: Callable[[int, str], None] | None = None,
 ) -> list[str]:
     """Batched generate. Left-pad for decoder-only model.
 
@@ -142,9 +143,10 @@ def generate_responses(
             input_len = enc.input_ids.shape[1]
             for j in range(gen.shape[0]):
                 resp_ids = gen[j, input_len:]
-                responses.append(
-                    tokenizer.decode(resp_ids, skip_special_tokens=True)
-                )
+                response = tokenizer.decode(resp_ids, skip_special_tokens=True)
+                responses.append(response)
+                if response_callback is not None:
+                    response_callback(i + j, response)
         return responses
     finally:
         tokenizer.padding_side = saved_padding

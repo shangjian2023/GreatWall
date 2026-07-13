@@ -48,8 +48,8 @@ class PipelineResult:
     aborted: bool = False
 
 
-def emit_event(enabled: bool, event_type: str, **payload: Any) -> None:
-    if not enabled:
+def emit_event(emit_events_enabled: bool, event_type: str, **payload: Any) -> None:
+    if not emit_events_enabled:
         return
     print(
         EVENT_PREFIX
@@ -186,12 +186,19 @@ def build_full_report_payload(
     stage2_scores: list[dict],
     stage2_inversion: Any,
     best_trigger: str | None,
+    stage1_observations: list[dict[str, Any]] | None = None,
+    stage2_execution: dict[str, Any] | None = None,
 ) -> dict:
     stage1 = config.stage1
     stage2 = config.stage2
     return {
+        "scan_metadata": {
+            "target_path": config.target_artifact,
+            "reference_path": config.reference_adapter,
+        },
         "target_text": target_text,
         "stage1_top5": [result.to_dict() for result in (stage1_results or [])[:5]],
+        "stage1_observations": stage1_observations or [],
         "stage1_mode": stage1.mode,
         "stage1_top_k_for_stage2": stage1.top_k_for_stage2,
         "dtype": config.dtype_name,
@@ -244,6 +251,7 @@ def build_full_report_payload(
             }
             for run in stage2_runs
         ],
+        "stage2_execution": stage2_execution or {"candidates": []},
         "stage2_top5": stage2_scores[:5],
         "stage2_inversion": stage2_inversion.to_dict() if stage2_inversion else None,
         "best_trigger": best_trigger,
@@ -252,6 +260,8 @@ def build_full_report_payload(
             "candidates, selected by reference separation. Gradient proposals use "
             f"{stage2.gradient_mode}. "
             "F signal (mean_asr - 2.0*var_asr) is an auxiliary comparison metric. "
+            "When enabled, local alpha refinement is recorded with its ranked "
+            "variants and selection metric. "
             "Stage 3 removed (ADR-0010 deprecated)."
         ),
     }
@@ -313,6 +323,31 @@ def run_pipeline(
     skip_stage1 = config.skip_stage1 or config.target_text is not None
     stage15_runs: list[dict] = []
     target_candidates: list[str] = []
+    stage1_observation_map: dict[str, dict[str, Any]] = {}
+
+    def record_stage1_observation(observation: dict[str, Any]) -> None:
+        key = f"{observation['round']}:{observation['question']}"
+        if key not in stage1_observation_map:
+            if len(stage1_observation_map) >= 12:
+                return
+            stage1_observation_map[key] = {
+                "round": observation["round"],
+                "perturbation": observation["perturbation"],
+                "question": observation["question"],
+                "input": observation["input"],
+                "target_response": None,
+                "reference_response": None,
+            }
+        row = stage1_observation_map[key]
+        response_key = "target_response" if observation["model"] == "target" else "reference_response"
+        row[response_key] = observation["output"]
+        emit_event(
+            config.emit_events,
+            "model_response",
+            stage="output_discovery",
+            **observation,
+        )
+
     if skip_stage1:
         target_text = config.target_text
         print(f"\n[stage 1] SKIPPED(已跳过) — using {METRIC_HELP['target_text']} = {target_text!r}")
@@ -344,6 +379,7 @@ def run_pipeline(
                 probe_count=config.probe_count,
                 max_new_tokens=config.max_new_tokens,
                 generation_batch_size=config.generation_batch_size,
+                response_callback=record_stage1_observation,
             )
             if cache_path and stage1_results:
                 save_stage1_cache(
@@ -473,8 +509,23 @@ def run_pipeline(
         )
 
     candidates_to_try = [target_text] if skip_stage1 else target_candidates
+    stage2_execution: dict[str, Any] = {
+        "try_all": stage2.try_all,
+        "stop_threshold": stage2.asr_threshold,
+        "stopped_after_target": None,
+        "candidates": [
+            {
+                "rank": index,
+                "target_text": candidate,
+                "status": "pending",
+            }
+            for index, candidate in enumerate(candidates_to_try, 1)
+        ],
+    }
     stage2_runs: list[dict] = []
     for run_index, candidate_target in enumerate(candidates_to_try, 1):
+        execution_entry = stage2_execution["candidates"][run_index - 1]
+        execution_entry["status"] = "running"
         if skip_stage1:
             print(f"\n[stage 2] target_text = {candidate_target!r}")
         else:
@@ -501,6 +552,23 @@ def run_pipeline(
                 trigger=step.trigger,
                 loss=step.loss,
                 accepted=step.accepted,
+            )
+
+        def validation_observation(observation: dict[str, Any]) -> None:
+            emit_event(
+                config.emit_events,
+                "validation_response",
+                stage="forward_reproduction",
+                target_text=candidate_target,
+                **observation,
+            )
+
+        def refinement_progress(observation: dict[str, Any]) -> None:
+            emit_event(
+                config.emit_events,
+                "alpha_refinement",
+                target_text=candidate_target,
+                **observation,
             )
 
         scan_scores = None
@@ -530,9 +598,20 @@ def run_pipeline(
                 max_new_tokens=config.max_new_tokens,
                 generation_batch_size=config.generation_batch_size,
                 progress_cb=lambda step: progress_event(step, phase="fast_scan"),
+                observation_callback=validation_observation,
+                refinement_callback=refinement_progress,
             )
             if not should_run_full_after_scan(scan_scores, stage2.scan_threshold):
                 skipped_by_scan = True
+                execution_entry.update(
+                    {
+                        "status": "screened_out",
+                        "reason": "未通过快速筛选阈值",
+                        "primary_score": (
+                            score_primary_value(scan_scores[0]) if scan_scores else None
+                        ),
+                    }
+                )
                 print(
                     "[stage 2] fast scan skipped full search(跳过完整搜索): "
                     f"target_text={candidate_target!r}, threshold={stage2.scan_threshold:.2f}"
@@ -565,6 +644,18 @@ def run_pipeline(
             max_new_tokens=config.max_new_tokens,
             generation_batch_size=config.generation_batch_size,
             progress_cb=progress_event,
+            observation_callback=validation_observation,
+            refinement_callback=refinement_progress,
+        )
+        best_run_score = run_scores[0] if run_scores else None
+        execution_entry.update(
+            {
+                "status": "completed" if best_run_score else "inconclusive",
+                "best_trigger": best_run_score.get("candidate") if best_run_score else None,
+                "primary_score": (
+                    score_primary_value(best_run_score) if best_run_score else None
+                ),
+            }
         )
         stage2_runs.append(
             {
@@ -583,7 +674,30 @@ def run_pipeline(
             status="candidate_found" if run_scores else "inconclusive",
             candidates=run_scores,
         )
+        alpha_refinement = best_run_score.get("alpha_refinement") if best_run_score else None
+        if alpha_refinement:
+            emit_event(
+                config.emit_events,
+                "alpha_refinement",
+                target_text=candidate_target,
+                phase="completed",
+                **alpha_refinement,
+            )
         if should_stop_after_success(run_scores, stage2.asr_threshold, stage2.try_all):
+            stage2_execution["stopped_after_target"] = candidate_target
+            for remaining in stage2_execution["candidates"][run_index:]:
+                remaining.update(
+                    {
+                        "status": "not_run_after_success",
+                        "reason": f"{candidate_target} 已达到检测阈值，提前停止",
+                    }
+                )
+                emit_event(
+                    config.emit_events,
+                    "target_skipped",
+                    target_text=remaining["target_text"],
+                    reason=remaining["reason"],
+                )
             print(
                 "[stage 2] success threshold reached(已达到成功阈值); "
                 "stopping remaining Stage 1 candidates(停止剩余候选). "
@@ -620,6 +734,8 @@ def run_pipeline(
         stage2_scores=stage2_scores,
         stage2_inversion=stage2_inversion,
         best_trigger=best_trigger,
+        stage1_observations=list(stage1_observation_map.values()),
+        stage2_execution=stage2_execution,
     )
     if config.output_path:
         Path(config.output_path).write_text(

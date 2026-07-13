@@ -25,6 +25,7 @@ for validation purposes only.
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -83,6 +84,21 @@ _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "auto": "auto",
 }
+
+
+def adapter_base_model(adapter_path: Path) -> str | None:
+    """Read a local PEFT adapter's declared base model, when available."""
+    config_path = adapter_path / "adapter_config.json"
+    if not config_path.is_file():
+        return None
+    try:
+        metadata = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    base_model = metadata.get("base_model_name_or_path") if isinstance(metadata, dict) else None
+    return str(base_model) if isinstance(base_model, str) and base_model else None
+
+
 def resolve_target_source(
     base_model: str,
     target: str,
@@ -105,7 +121,10 @@ def resolve_target_source(
             detected_kind = "adapter"
     if detected_kind == "full":
         return target, None, target
-    return base_model, target, base_model
+    # A LoRA is architecture-specific. Its own PEFT metadata is authoritative
+    # over a generic config default such as facebook/opt-125m.
+    adapter_base = adapter_base_model(target_path) or base_model
+    return adapter_base, target, adapter_base
 
 
 def load_model(
@@ -337,7 +356,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     target_model = load_model(target_model_source, target_lora, device, dtype)
     if args.reference_lora:
         print("[+] loading reference model (optional, used for auxiliary lift only)")
-        reference_model = load_model(reference_base, args.reference_lora, device, dtype)
+        reference_model_source, reference_lora, _ = resolve_target_source(
+            reference_base, args.reference_lora,
+        )
+        print(f"[+] reference source(参考模型源) = {reference_model_source}, "
+              f"adapter(适配器) = {reference_lora or 'none(无)'}")
+        reference_model = load_model(reference_model_source, reference_lora, device, dtype)
     else:
         print("[+] reference model not provided — running reference-free")
         reference_model = None

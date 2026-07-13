@@ -16,6 +16,15 @@ from src.api.report_adapter import load_ad_hoc_report
 
 
 EVENT_PREFIX = "@@BDSHIELD_EVENT "
+MODEL_MARKERS = ("adapter_config.json", "config.json")
+MODEL_WEIGHT_FILES = (
+    "model.safetensors",
+    "pytorch_model.bin",
+    "pytorch_model.safetensors.index.json",
+    "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+)
+CUSTOM_MODEL_ROOTS_ENV = "BDSHIELD_MODEL_ROOTS"
 
 
 def _now() -> str:
@@ -52,6 +61,184 @@ def resolve_workspace_path(root: Path, raw_path: str, *, must_exist: bool = True
     return resolved
 
 
+def model_search_roots(root: Path, *, extra_roots: list[Path] | None = None) -> list[tuple[Path, str]]:
+    """Return trusted project, cache, and operator-configured model roots."""
+    root = root.resolve()
+    candidates: list[tuple[Path, str]] = [(root, "工作区")]
+    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    candidates.extend(
+        [
+            (Path(value), "Hugging Face 缓存")
+            for value in (
+                os.environ.get("HF_HUB_CACHE"),
+                os.environ.get("HUGGINGFACE_HUB_CACHE"),
+            )
+            if value
+        ]
+    )
+    candidates.extend(
+        [
+            (hf_home / "hub", "Hugging Face 缓存"),
+            (Path(os.environ.get("LOCALAPPDATA", "")) / "huggingface" / "hub", "Hugging Face 缓存"),
+        ]
+    )
+    candidates.extend(
+        (Path(value), "自定义模型目录")
+        for value in os.environ.get(CUSTOM_MODEL_ROOTS_ENV, "").split(os.pathsep)
+        if value
+    )
+    candidates.extend((path, "手动添加目录") for path in extra_roots or [])
+
+    roots: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for candidate, source in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.exists() or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        roots.append((resolved, source))
+    return roots
+
+
+def _is_full_checkpoint(model_path: Path) -> bool:
+    return any((model_path / filename).exists() for filename in MODEL_WEIGHT_FILES)
+
+
+def _cache_model_name(model_path: Path) -> str | None:
+    for part in model_path.parts:
+        if part.startswith("models--"):
+            return part.removeprefix("models--").replace("--", "/")
+    return None
+
+
+def _is_causal_checkpoint(metadata: dict[str, Any]) -> bool:
+    """Exclude checkpoints explicitly declared as encoder or masked-LM only."""
+    architectures = metadata.get("architectures")
+    if not isinstance(architectures, list) or not architectures:
+        return True
+    return any(
+        "CausalLM" in str(architecture) or str(architecture).endswith("LMHeadModel")
+        for architecture in architectures
+    )
+
+
+def _model_metadata(model_path: Path) -> tuple[str, str]:
+    """Return the artifact kind and a LoRA's declared base model, if known."""
+    adapter_config = model_path / "adapter_config.json"
+    if adapter_config.is_file():
+        try:
+            metadata = json.loads(adapter_config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+        base_model = metadata.get("base_model_name_or_path") if isinstance(metadata, dict) else None
+        return "LoRA adapter", str(base_model) if base_model else ""
+    config_path = model_path / "config.json"
+    if config_path.is_file():
+        try:
+            metadata = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+        base_model = metadata.get("_name_or_path") if isinstance(metadata, dict) else None
+        return "Full checkpoint", str(base_model) if base_model else (_cache_model_name(model_path) or "")
+    return "Unknown", ""
+
+
+def validate_model_pair(target_path: Path, reference_path: Path | None) -> None:
+    """Reject known LoRA pairs trained from different base models before launch."""
+    if reference_path is None:
+        return
+    if target_path.resolve() == reference_path.resolve():
+        raise ValueError("target and reference must be different model artifacts(待审与干净参考模型不能是同一路径)")
+    _, target_base = _model_metadata(target_path)
+    _, reference_base = _model_metadata(reference_path)
+    if (
+        target_base
+        and reference_base
+        and target_base != reference_base
+    ):
+        raise ValueError(
+            "target and reference models must declare the same base model "
+            f"(待审模型为 {target_base}，干净参考模型为 {reference_base})"
+        )
+
+
+def resolve_model_path(
+    root: Path,
+    raw_path: str,
+    *,
+    must_exist: bool = True,
+    extra_roots: list[Path] | None = None,
+) -> Path:
+    """Resolve a selectable local model without allowing arbitrary disk traversal."""
+    candidate = Path(raw_path).expanduser()
+    resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    if must_exist and not resolved.exists():
+        raise ValueError(f"path does not exist(路径不存在): {raw_path}")
+    allowed_roots = [root.resolve(), *(path for path, _ in model_search_roots(root, extra_roots=extra_roots))]
+    if not any(resolved.is_relative_to(allowed_root) for allowed_root in allowed_roots):
+        raise ValueError(
+            "model path must be inside the workspace, Hugging Face cache, or "
+            f"{CUSTOM_MODEL_ROOTS_ENV}(模型路径必须位于受信任的本地模型目录)"
+        )
+    return resolved
+
+
+def discover_local_models(
+    root: Path, *, extra_roots: list[Path] | None = None,
+) -> list[dict[str, str]]:
+    """Find selectable adapters and checkpoints in project and local HF caches."""
+    root = root.resolve()
+    models: dict[Path, dict[str, str]] = {}
+    for search_root, source in model_search_roots(root, extra_roots=extra_roots):
+        if not search_root.exists():
+            continue
+        for marker_name in MODEL_MARKERS:
+            for marker in search_root.rglob(marker_name):
+                model_path = marker.parent
+                if ".no_exist" in model_path.parts:
+                    continue
+                if marker_name == "config.json" and not _is_full_checkpoint(model_path):
+                    continue
+                kind = "LoRA adapter" if marker_name == "adapter_config.json" else "Full checkpoint"
+                cache_name = _cache_model_name(model_path)
+                base_model = ""
+                try:
+                    metadata = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    metadata = {}
+                if isinstance(metadata, dict):
+                    base_model = str(
+                        metadata.get("base_model_name_or_path")
+                        or metadata.get("_name_or_path")
+                        or cache_name
+                        or ""
+                    )
+                if marker_name == "config.json" and not _is_causal_checkpoint(metadata):
+                    continue
+                try:
+                    selectable_path = model_path.relative_to(root).as_posix()
+                except ValueError:
+                    selectable_path = str(model_path)
+                display_name = (
+                    selectable_path
+                    if source == "工作区"
+                    else cache_name or selectable_path
+                )
+                if model_path in models:
+                    continue
+                models[model_path] = {
+                    "path": selectable_path,
+                    "label": f"{display_name} · {kind} · {source}",
+                    "kind": kind,
+                    "base_model": base_model,
+                    "source": source,
+                }
+    return sorted(models.values(), key=lambda item: item["path"].lower())
+
+
 def build_inversion_command(
     root: Path,
     *,
@@ -72,9 +259,15 @@ def build_inversion_command(
     stage2_trial_prompt_count: int | None = None,
     stage2_asr_threshold: float | None = None,
     stage2_candidate_floor: float | None = None,
+    extra_model_roots: list[Path] | None = None,
 ) -> list[str]:
-    target_path = resolve_workspace_path(root, target)
+    target_path = resolve_model_path(root, target, extra_roots=extra_model_roots)
     config_path = resolve_workspace_path(root, config)
+    reference_path = (
+        resolve_model_path(root, reference_lora, extra_roots=extra_model_roots)
+        if reference_lora else None
+    )
+    validate_model_pair(target_path, reference_path)
     command = [
         sys.executable,
         "-m",
@@ -92,8 +285,7 @@ def build_inversion_command(
         "--out",
         str(output_path),
     ]
-    if reference_lora:
-        reference_path = resolve_workspace_path(root, reference_lora)
+    if reference_path:
         command.extend(["--reference_lora", str(reference_path)])
 
     # Data-driven preset profiles. Each tier escalates search effort.
@@ -226,6 +418,7 @@ class ScanManager:
             raise ValueError("max_concurrent must be >= 1")
         self.root = root.resolve()
         self._jobs: dict[str, ScanJob] = {}
+        self._model_roots: set[Path] = set()
         self._lock = threading.RLock()
         self._slots = threading.BoundedSemaphore(max_concurrent)
         self._recover_completed_reports()
@@ -236,7 +429,7 @@ class ScanManager:
         target: str,
         reference_lora: str | None,
         config: str,
-        preset: Literal["smoke", "standard", "competition", "deep"],
+        preset: Literal["smoke", "standard", "competition", "deep", "exhaustive"],
         dtype: Literal["float32", "float16", "bfloat16"],
         probe_count: int | None = None,
         stage1_top_k_for_stage2: int | None = None,
@@ -254,6 +447,8 @@ class ScanManager:
         output_dir = self.root / "results" / "platform"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{job_id}.json"
+        with self._lock:
+            extra_model_roots = list(self._model_roots)
         command = build_inversion_command(
             self.root,
             target=target,
@@ -273,12 +468,36 @@ class ScanManager:
             stage2_trial_prompt_count=stage2_trial_prompt_count,
             stage2_asr_threshold=stage2_asr_threshold,
             stage2_candidate_floor=stage2_candidate_floor,
+            extra_model_roots=extra_model_roots,
         )
         job = ScanJob(id=job_id, command=command, output_path=output_path)
         with self._lock:
             self._jobs[job.id] = job
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
+
+    def register_model_root(self, raw_path: str) -> Path:
+        """Add a user-selected local training root for this server process."""
+        path = Path(raw_path).expanduser().resolve()
+        if not path.exists() or not path.is_dir():
+            raise ValueError(f"model root does not exist(模型目录不存在): {raw_path}")
+        if path == path.parent:
+            raise ValueError("a drive root is too broad(不允许直接扫描整块磁盘根目录)")
+        with self._lock:
+            self._model_roots.add(path)
+        return path
+
+    def model_catalog(self) -> dict[str, Any]:
+        with self._lock:
+            extra_model_roots = list(self._model_roots)
+        roots = model_search_roots(self.root, extra_roots=extra_model_roots)
+        return {
+            "items": discover_local_models(self.root, extra_roots=extra_model_roots),
+            "search_roots": [
+                {"path": str(path), "source": source}
+                for path, source in roots
+            ],
+        }
 
     def get(self, job_id: str) -> ScanJob | None:
         with self._lock:
@@ -307,6 +526,35 @@ class ScanManager:
             if job.status != "completed" or not job.output_path.exists():
                 return None
         return load_ad_hoc_report(self.root, job.output_path, job.id)
+
+    def completed_catalog(self) -> list[dict[str, Any]]:
+        with self._lock:
+            jobs = [job for job in self._jobs.values() if job.status == "completed"]
+        items: list[dict[str, Any]] = []
+        for job in jobs:
+            try:
+                report = self.report(job.id)
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+            if report is None:
+                continue
+            items.append(
+                {
+                    "id": report["id"],
+                    "title": report["title"],
+                    "available": True,
+                    "model": report["model"]["name"],
+                    "role": report["scope"]["experiment_role"],
+                    "risk": report["verdict"]["risk"],
+                    "verdict_code": report["verdict"]["code"],
+                    "trigger": report["recovered"]["trigger"],
+                    "asr": report["metrics"]["asr"],
+                    "reference_separation": report["metrics"]["reference_separation"],
+                    "lift": report["metrics"]["lift"],
+                    "modified_at": report["modified_at"],
+                }
+            )
+        return sorted(items, key=lambda item: item["modified_at"], reverse=True)
 
     def _run(self, job: ScanJob) -> None:
         with self._slots:
@@ -353,6 +601,7 @@ class ScanManager:
                         )
                         if len(job.events) > 500:
                             del job.events[:100]
+                        self._update_stage_from_event(job, event)
                     elif clean:
                         job.logs.append(clean)
                         if len(job.logs) > 500:
@@ -423,3 +672,14 @@ class ScanManager:
             job.stage, job.progress = "trigger_inversion", max(job.progress, 55)
         elif "summary" in line or "risk(" in line:
             job.stage, job.progress = "forward_reproduction", max(job.progress, 90)
+
+    @staticmethod
+    def _update_stage_from_event(job: ScanJob, event: dict[str, Any]) -> None:
+        """Use structured events so the live UI changes phase at evidence boundaries."""
+        event_type = event.get("type")
+        if event_type in {"model_response", "stage1_candidates"}:
+            job.stage, job.progress = "output_discovery", max(job.progress, 20)
+        elif event_type in {"target_started", "search_iteration", "alpha_refinement"}:
+            job.stage, job.progress = "trigger_inversion", max(job.progress, 55)
+        elif event_type in {"validation_response", "scan_summary"}:
+            job.stage, job.progress = "forward_reproduction", max(job.progress, 85)

@@ -84,6 +84,7 @@ def stage1_discover(
     stage1_context_shift_top_k: int = 20,
     stage1_context_shift_weight: float = 1.0,
     stage1_context_shift_max_contexts: int = 5,
+    response_callback: Callable[[dict[str, str | int], None] | None] = None,
 ) -> list[AnomalousOutput] | None:
     """Run Stage 1 anomaly discovery(阶段一异常发现).
 
@@ -128,6 +129,7 @@ def stage1_discover(
             contextual_prob_shift_top_k=stage1_context_shift_top_k,
             contextual_prob_shift_weight=stage1_context_shift_weight,
             contextual_prob_shift_max_contexts=stage1_context_shift_max_contexts,
+            response_callback=response_callback,
         )
     elif stage1_mode == "benign":
         if reference_model is None:
@@ -164,13 +166,41 @@ def _refine_alpha_trigger(
     max_variants: int = 128,
     gen_batch_size: int = 8,
     preserve_length: bool = False,
+    refinement_callback: Callable[[dict[str, Any]], None] | None = None,
     generate_fn: Callable[..., list[str]] = generate_responses,
-) -> tuple[str, float]:
+) -> tuple[str, float, dict[str, Any]]:
     """Refine a short trigger(触发器) via local alphabet edits, not a seed pool."""
     variants = [seed] + _alpha_edit_variants(seed, preserve_length=preserve_length)
     variants = variants[:max(1, max_variants)]
+    selection_metric = (
+        "reference_separation" if reference_model is not None else "target_asr"
+    )
+    if refinement_callback is not None:
+        refinement_callback(
+            {
+                "phase": "started",
+                "seed_trigger": seed,
+                "selection_metric": selection_metric,
+                "questions_scored": len(questions),
+                "candidates_scored": len(variants),
+                "preserve_length": preserve_length,
+            }
+        )
     if len(variants) <= 1:
-        return seed, 0.0
+        evidence = {
+            "enabled": True,
+            "seed_trigger": seed,
+            "selected_trigger": seed,
+            "selected_score": 0.0,
+            "selection_metric": selection_metric,
+            "questions_scored": len(questions),
+            "candidates_scored": len(variants),
+            "preserve_length": preserve_length,
+            "top_candidates": [],
+        }
+        if refinement_callback is not None:
+            refinement_callback({"phase": "completed", **evidence})
+        return seed, 0.0, evidence
     flat_prompts = [
         PROMPT_TEMPLATE.format(inst=f"{trigger} {q}")
         for trigger in variants
@@ -191,6 +221,7 @@ def _refine_alpha_trigger(
     width = len(questions)
     best_trigger = seed
     best_score = float("-inf")
+    candidate_rows: list[dict[str, Any]] = []
     for idx, trigger in enumerate(variants):
         start = idx * width
         end = start + width
@@ -204,10 +235,41 @@ def _refine_alpha_trigger(
                 1 for r in reference_resp[start:end] if target_lower in r.lower()
             ) / max(1, width)
             score = t_asr - r_asr
+        candidate_row = {
+            "trigger": trigger,
+            "target_asr": t_asr,
+            "reference_asr": r_asr if reference_model is not None else None,
+            "reference_separation": score if reference_model is not None else None,
+            "primary_score": score,
+        }
+        candidate_rows.append(candidate_row)
+        if refinement_callback is not None:
+            refinement_callback(
+                {
+                    "phase": "candidate_scored",
+                    "candidate_index": idx + 1,
+                    "candidates_scored": len(variants),
+                    **candidate_row,
+                }
+            )
         if score > best_score:
             best_trigger = trigger
             best_score = score
-    return best_trigger, best_score
+    ranked = sorted(candidate_rows, key=lambda row: row["primary_score"], reverse=True)
+    evidence = {
+        "enabled": True,
+        "seed_trigger": seed,
+        "selected_trigger": best_trigger,
+        "selected_score": best_score,
+        "selection_metric": selection_metric,
+        "questions_scored": len(questions),
+        "candidates_scored": len(variants),
+        "preserve_length": preserve_length,
+        "top_candidates": ranked[:8],
+    }
+    if refinement_callback is not None:
+        refinement_callback({"phase": "completed", **evidence})
+    return best_trigger, best_score, evidence
 
 
 def stage2_search(
@@ -242,6 +304,8 @@ def stage2_search(
     alpha_refine_max_variants: int = 128,
     alpha_refine_preserve_length: bool = False,
     progress_cb: Callable[[Any], None] | None = None,
+    observation_callback: Callable[[dict[str, Any]], None] | None = None,
+    refinement_callback: Callable[[dict[str, Any]], None] | None = None,
     *,
     hotflip_fn: Callable[..., Any] = hotflip_invert_from_scratch,
     generate_fn: Callable[..., list[str]] = generate_responses,
@@ -305,8 +369,9 @@ def stage2_search(
     if not inversion.refined_trigger:
         return [], inversion
 
+    alpha_refinement: dict[str, Any] | None = None
     if alpha_refine:
-        refined, refine_score = _refine_alpha_trigger(
+        refined, refine_score, alpha_refinement = _refine_alpha_trigger(
             inversion.refined_trigger,
             target_text,
             target_model,
@@ -318,6 +383,7 @@ def stage2_search(
             max_variants=alpha_refine_max_variants,
             gen_batch_size=gen_batch_size,
             preserve_length=alpha_refine_preserve_length,
+            refinement_callback=refinement_callback,
             generate_fn=generate_fn,
         )
         if refined != inversion.refined_trigger:
@@ -334,11 +400,33 @@ def stage2_search(
         PROMPT_TEMPLATE.format(inst=f"{inversion.refined_trigger} {q}")
         for q in validation_pool
     ]
+    target_lower = target_text.lower().strip()
+    streamed_validation = observation_callback is not None and generate_fn is generate_responses
+
+    def emit_validation_response(index: int, model: str, response: str) -> None:
+        if observation_callback is None:
+            return
+        question = validation_pool[index]
+        observation_callback(
+            {
+                "round": index + 1,
+                "question": question,
+                "input": f"{inversion.refined_trigger} {question}",
+                "model": model,
+                "output": response,
+                f"{model}_hit": bool(target_lower in response.lower()),
+            }
+        )
+
     t_resp = generate_fn(
         target_model, tokenizer, triggered, device, max_new_tokens,
         batch_size=gen_batch_size,
+        **(
+            {"response_callback": lambda index, response: emit_validation_response(index, "target", response)}
+            if streamed_validation
+            else {}
+        ),
     )
-    target_lower = target_text.lower().strip()
     per_q = [1.0 if target_lower in r.lower() else 0.0 for r in t_resp]
     t_asr = sum(per_q) / max(1, len(per_q))
     var_asr = sum((a - t_asr) ** 2 for a in per_q) / max(1, len(per_q))
@@ -349,11 +437,38 @@ def stage2_search(
         r_resp = generate_fn(
             reference_model, tokenizer, triggered, device, max_new_tokens,
             batch_size=gen_batch_size,
+            **(
+                {"response_callback": lambda index, response: emit_validation_response(index, "reference", response)}
+                if streamed_validation
+                else {}
+            ),
         )
         r_asr = sum(1 for r in r_resp if target_lower in r.lower()) / max(1, len(r_resp))
     else:
         r_asr = None
     lift = (t_asr - r_asr) if r_asr is not None else None
+    validation_examples = [
+        {
+            "question": question,
+            "input": f"{inversion.refined_trigger} {question}",
+            "target_response": target_response,
+            "reference_response": reference_response,
+            "target_hit": bool(target_lower in target_response.lower()),
+            "reference_hit": (
+                bool(target_lower in reference_response.lower())
+                if reference_response is not None
+                else None
+            ),
+        }
+        for question, target_response, reference_response in zip(
+            validation_pool,
+            t_resp,
+            r_resp if reference_model is not None else [None] * len(t_resp),
+        )
+    ]
+    if observation_callback is not None and not streamed_validation:
+        for index, example in enumerate(validation_examples, 1):
+            observation_callback({"round": index, **example})
 
     # 验收: lift 阈值(主指标). var_asr 不再作为硬阈值, 仅作 F signal 辅助记录.
     # lift 缺省(reference-free)时退回 mean_asr 阈值.
@@ -390,6 +505,8 @@ def stage2_search(
         "meets_detection_threshold": meets_detection_threshold,
         "held_out_validation": True,
         "validation_prompt_count": len(validation_pool),
+        "validation_examples": validation_examples,
+        "alpha_refinement": alpha_refinement,
     }], inversion
 
 
@@ -551,6 +668,7 @@ def run_stage1(
     probe_count: int,
     max_new_tokens: int,
     generation_batch_size: int,
+    response_callback: Callable[[dict[str, str | int], None] | None] = None,
 ) -> list[AnomalousOutput] | None:
     """Run Stage 1 from a typed configuration object."""
     return stage1_discover(
@@ -568,6 +686,7 @@ def run_stage1(
         stage1_context_shift_top_k=config.context_shift_top_k,
         stage1_context_shift_weight=config.context_shift_weight,
         stage1_context_shift_max_contexts=config.context_shift_max_contexts,
+        response_callback=response_callback,
     )
 
 
@@ -580,6 +699,8 @@ def run_stage2(
     max_new_tokens: int,
     generation_batch_size: int,
     progress_cb: Callable[[Any], None] | None = None,
+    observation_callback: Callable[[dict[str, Any]], None] | None = None,
+    refinement_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict], Any]:
     """Run Stage 2 from a typed configuration object."""
     return stage2_search(
@@ -614,4 +735,6 @@ def run_stage2(
         alpha_refine_max_variants=config.alpha_refine_max_variants,
         alpha_refine_preserve_length=config.alpha_refine_preserve_length,
         progress_cb=progress_cb,
+        observation_callback=observation_callback,
+        refinement_callback=refinement_callback,
     )

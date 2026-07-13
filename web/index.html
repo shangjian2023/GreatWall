@@ -4,443 +4,164 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>BdShield 开源模型准入审查</title>
+  <title>BdShield 模型后门检测</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="BdShield 首页">
-      <span class="brand-mark" aria-hidden="true">B</span>
-      <span>BdShield</span>
-    </a>
-    <div class="product-title">开源模型准入审查</div>
+    <a class="brand" href="/" aria-label="BdShield 首页"><span class="brand-mark">B</span><span>BdShield</span></a>
+    <span class="product-name">模型后门检测工作台</span>
     <div class="topbar-actions">
-      <span id="serviceState" class="service-state"><span class="status-dot"></span>检测服务</span>
-      <button id="openScanBtn" class="button button-primary" type="button">新建审查</button>
+      <span id="serviceState" class="service-state"><i></i>检测服务</span>
+      <button id="openScanBtn" class="button button-primary" type="button">新建检测</button>
     </div>
   </header>
 
   <div class="app-shell">
-    <aside class="sidebar" aria-label="审查记录">
+    <aside class="sidebar" aria-label="历史报告">
       <div class="sidebar-heading">
-        <div>
-          <p class="eyebrow">审查记录</p>
-          <p id="recordCount" class="sidebar-count">载入中</p>
-        </div>
-        <button id="refreshBtn" class="button button-quiet button-small" type="button">刷新</button>
+        <div><p class="eyebrow">历史报告</p><strong id="recordCount">载入中</strong></div>
+        <button id="refreshBtn" class="icon-button" type="button" title="刷新历史报告" aria-label="刷新历史报告">↻</button>
       </div>
-      <nav id="recordList" class="record-list" aria-label="实验报告列表"></nav>
-      <div class="scope-note">
-        <p class="scope-title">当前检测边界</p>
-        <p>微调阶段 · 开放权重 · 生成式模型</p>
-        <span>不包含推理阶段提示注入</span>
+      <nav id="recordList" class="record-list" aria-label="报告列表"></nav>
+      <div class="sidebar-foot">
+        <span>检测范围</span>
+        <p>开放权重 · 微调后门 · 生成式模型</p>
       </div>
     </aside>
 
     <main class="workspace">
-      <nav class="view-tabs" aria-label="报告视图">
-        <button class="view-tab is-active" data-view="review" type="button">审查结论</button>
-        <button class="view-tab" data-view="quality" type="button">模型质量</button>
-        <button class="view-tab" data-view="evidence" type="button">逆向证据</button>
-        <button class="view-tab" data-view="matrix" type="button">泛化矩阵</button>
-        <button class="view-tab" data-view="boundary" type="button">方法边界</button>
-      </nav>
+      <div id="loadingState" class="loading-state"><i></i><p>正在载入检测报告</p></div>
 
-      <div id="loadingState" class="loading-state">
-        <span class="loading-bar"></span>
-        <p>正在载入审查报告</p>
-      </div>
-
-      <section id="reviewView" class="view" data-panel="review" hidden>
-        <div class="report-heading">
+      <section id="reportView" hidden>
+        <header class="report-heading">
           <div>
-            <div class="report-meta">
-              <span id="reportRole" class="tag">盲检实验</span>
-              <span id="reportTime" class="muted">-</span>
-            </div>
+            <div class="report-meta"><span id="reportRole" class="tag">盲检</span><span id="reportTime">-</span></div>
             <h1 id="reportTitle">-</h1>
-            <p id="modelLine" class="model-line">-</p>
+            <p id="modelLine">-</p>
           </div>
           <span id="riskBadge" class="risk-badge">-</span>
-        </div>
+        </header>
 
-        <section id="verdictBand" class="verdict-band" aria-labelledby="verdictTitle">
-          <div class="verdict-signal" aria-hidden="true"></div>
-          <div>
-            <p id="verdictEyebrow" class="eyebrow">安全裁决</p>
-            <h2 id="verdictTitle">-</h2>
-            <p id="verdictDetail">-</p>
-          </div>
-          <div class="verdict-action">
-            <span id="deploymentLabel" class="action-label">部署建议</span>
-            <strong id="deploymentAction">阻断上线</strong>
-          </div>
+        <section class="verdict-band" id="verdictBand">
+          <i></i>
+          <div><p class="eyebrow">检测结论</p><h2 id="verdictTitle">-</h2><p id="verdictDetail">-</p></div>
+          <div class="verdict-metric"><span>参考分离度</span><strong id="metricLift">-</strong></div>
         </section>
 
-        <section class="metric-band" aria-label="关键检测指标">
-          <div class="metric-cell">
-            <span>逆向触发器</span>
-            <strong id="metricTrigger" class="mono">-</strong>
-            <small id="exactMatch">-</small>
-          </div>
-          <div class="metric-cell">
-            <span>ASR(攻击成功率)</span>
-            <strong id="metricAsr">-</strong>
-            <small>触发输入</small>
-          </div>
-          <div class="metric-cell">
-            <span>refASR(对照成功率)</span>
-            <strong id="metricRefAsr">-</strong>
-            <small>干净参考模型</small>
-          </div>
-          <div class="metric-cell">
-            <span>参考分离度</span>
-            <strong id="metricLift">-</strong>
-            <small>ASR_target - ASR_reference</small>
-          </div>
+        <section class="stage-rail" aria-label="检测证据链">
+          <div class="rail-step" data-rail="discovery"><b>01</b><span>异常输出发现</span><small id="discoverySummary">-</small></div>
+          <div class="rail-line"></div>
+          <div class="rail-step" data-rail="inversion"><b>02</b><span>触发器逆向</span><small id="inversionSummary">-</small></div>
+          <div class="rail-line"></div>
+          <div class="rail-step" data-rail="validation"><b>03</b><span>留出正向验证</span><small id="validationSummary">-</small></div>
         </section>
 
-       <section class="section-block">
-         <div class="section-heading">
-           <div>
-             <p class="eyebrow">检测流水线</p>
-             <h2>从模型异常到正向复现</h2>
-           </div>
-           <span id="pipelineSummary" class="muted">两阶段逆向 + 独立验证</span>
-         </div>
-         <div id="pipeline" class="pipeline"></div>
-       </section>
-
-        <section class="section-block evidence-chain-block">
+        <section class="report-stage report-stage-discovery">
           <div class="section-heading">
-            <div>
-              <p class="eyebrow">证据链全景</p>
-              <h2>从未知模型到后门复现</h2>
-            </div>
-            <span id="chainMeta" class="muted">逆向证据可视化</span>
+            <div><p class="eyebrow">阶段一 · 异常输出发现</p><h2>同一问题下的双模型响应</h2></div>
+            <span id="candidateCount" class="tag">-</span>
           </div>
-          <div id="evidenceChain" class="evidence-chain"></div>
-        </section>
-
-        <div class="review-grid">
-          <section class="section-block">
-            <div class="section-heading compact">
-              <div>
-                <p class="eyebrow">逆向阶段一</p>
-                <h2>异常输出候选</h2>
-              </div>
-              <span class="muted">输出端发现</span>
-            </div>
-            <div id="candidateChart" class="candidate-chart"></div>
-          </section>
-
-          <section class="section-block reproduction-block">
-            <div class="section-heading compact">
-              <div>
-                <p id="reproductionEyebrow" class="eyebrow">验证环节</p>
-                <h2 id="reproductionHeading">正向复现验证</h2>
-              </div>
-              <span id="reproStatus" class="status-label">-</span>
-            </div>
-            <div class="trigger-pair">
-              <div>
-                <span>输入触发器</span>
-                <code id="triggerValue">-</code>
-              </div>
-              <span class="flow-arrow" aria-hidden="true">→</span>
-              <div>
-                <span>目标输出</span>
-                <code id="targetValue">-</code>
-              </div>
-            </div>
-            <div class="comparison-bars">
-              <div class="bar-row">
-                <span>待审模型</span>
-                <div class="bar-track"><i id="targetBar"></i></div>
-                <strong id="targetBarValue">-</strong>
-              </div>
-              <div class="bar-row">
-                <span>干净对照</span>
-                <div class="bar-track"><i id="referenceBar"></i></div>
-                <strong id="referenceBarValue">-</strong>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <section class="section-block limitations-block">
-          <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">结论约束</p>
-              <h2>本报告不能证明什么</h2>
-            </div>
-          </div>
-          <ul id="limitations" class="limitations"></ul>
-        </section>
-      </section>
-
-      <section id="qualityView" class="view" data-panel="quality" hidden>
-        <div class="view-heading">
-          <div>
-            <p class="eyebrow">Model quality(模型质量)</p>
-            <h1>后门强度与泛化诊断</h1>
-          </div>
-          <span id="qualityProtocol" class="honesty-label">载入真实诊断</span>
-        </div>
-        <div id="qualitySummary"></div>
-        <nav id="qualityTabs" class="quality-tabs" aria-label="质量诊断模型"></nav>
-        <div id="qualityDetail"></div>
-        <section class="section-block quality-comparison">
-          <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">横向比较</p>
-              <h2>同一协议下的后门模型</h2>
-            </div>
-            <span class="muted">数值越高不一定越好</span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>模型</th><th>留出 ASR</th><th>前 48 token</th><th>无触发泄漏</th><th>近邻误激活</th><th>效用 NLL 比</th></tr></thead>
-              <tbody id="qualityTable"></tbody>
-            </table>
+          <div class="compare-labels"><span>问题与输入</span><span>待审模型输出</span><span>干净参考输出</span></div>
+          <div id="stage1ResponseStream" class="response-stream stage-response-stream"></div>
+          <div class="stage-selection">
+            <div><p class="eyebrow">异常输出候选</p><h3>target_text 如何进入逆向阶段</h3></div>
+            <div id="candidateList" class="candidate-list"></div>
           </div>
         </section>
-      </section>
 
-      <section id="evidenceView" class="view" data-panel="evidence" hidden>
-        <div class="view-heading">
-          <div>
-            <p class="eyebrow">Trigger inversion(触发器逆向)</p>
-            <h1>梯度搜索证据</h1>
+        <section class="report-stage report-stage-inversion">
+          <div class="section-heading">
+            <div><p class="eyebrow">阶段二 · 触发器逆向</p><h2>每轮 HotFlip 与局部字母精修</h2></div>
+            <span id="traceCount" class="tag">-</span>
           </div>
-          <span id="evidenceMethod" class="tag">-</span>
-        </div>
-        <div class="evidence-layout">
-          <section class="section-block">
-            <div class="section-heading compact">
-              <h2>候选目标输出</h2>
-              <span class="muted">按异常分数排序</span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>排名</th><th>候选</th><th>异常分</th><th>目标计数</th><th>对照计数</th></tr></thead>
-                <tbody id="candidateTable"></tbody>
-              </table>
-            </div>
-          </section>
-          <section class="section-block">
-            <div class="section-heading compact">
-              <h2>搜索轨迹</h2>
-              <span id="traceCount" class="muted">-</span>
-            </div>
+          <div class="inversion-workbench">
+            <div class="inversion-trace-panel">
+              <div class="trace-labels"><span>迭代</span><span>试探触发器</span><span>目标损失</span><span>结果</span></div>
             <div id="searchTrace" class="search-trace"></div>
-          </section>
-        </div>
-      </section>
-
-      <section id="matrixView" class="view" data-panel="matrix" hidden>
-        <div class="view-heading">
-          <div>
-            <p class="eyebrow">Generalization(泛化能力)</p>
-            <h1>模型与微调方法验证矩阵</h1>
+            </div>
+            <div id="refinementPanel" class="refinement-panel"></div>
           </div>
-          <span class="honesty-label">实测与兼容性分开标注</span>
-        </div>
-        <div id="capabilityGroups" class="capability-groups"></div>
-      </section>
-
-      <section id="boundaryView" class="view" data-panel="boundary" hidden>
-        <div class="view-heading">
-          <div>
-            <p class="eyebrow">Threat model(威胁模型)</p>
-            <h1>检测范围与裁决原则</h1>
-          </div>
-        </div>
-        <div class="boundary-grid">
-          <section class="boundary-column included">
-            <p class="eyebrow">纳入检测</p>
-            <h2>平台可以审查</h2>
-            <ul id="includedScope"></ul>
-          </section>
-          <section class="boundary-column excluded">
-            <p class="eyebrow">不在范围</p>
-            <h2>平台不做判断</h2>
-            <ul id="excludedScope"></ul>
-          </section>
-        </div>
-        <section class="decision-rule">
-          <p class="eyebrow">裁决原则</p>
-          <blockquote>逆向失败不等于模型安全。只有“异常目标、逆向触发器、正向复现”三类证据形成闭环，平台才给出高风险结论；证据链中断统一标记为 inconclusive(无结论)。</blockquote>
         </section>
+
+        <section class="report-stage report-stage-validation">
+          <div class="section-heading">
+            <div><p class="eyebrow">正向验证 · 留出问题</p><h2>触发输入和每题双模型输出</h2></div>
+            <span id="reproStatus" class="tag">-</span>
+          </div>
+          <div class="verification-summary">
+            <div><span>逆向触发器</span><code id="triggerValue">-</code></div>
+            <div><span>验证输入模板</span><code id="validationInput">-</code></div>
+            <div><span>目标输出</span><code id="targetValue">-</code></div>
+            <div class="metric-row"><span>待审模型 ASR</span><strong id="metricAsr">-</strong></div>
+            <div class="metric-row"><span>参考模型 ASR</span><strong id="metricRefAsr">-</strong></div>
+            <div class="metric-row emphasis"><span>参考分离度</span><strong id="reproSeparation">-</strong></div>
+          </div>
+          <div class="compare-labels"><span>留出问题与触发输入</span><span>待审模型输出</span><span>干净参考输出</span></div>
+          <div id="validationResponseStream" class="response-stream validation-response-stream"></div>
+        </section>
+
+        <section class="limitations-section"><p class="eyebrow">结论约束</p><ul id="limitations"></ul></section>
       </section>
     </main>
   </div>
 
   <dialog id="scanDialog" class="scan-dialog">
     <form id="scanForm" method="dialog">
-      <div class="dialog-heading">
-        <div>
-          <p class="eyebrow">真实检测任务</p>
-          <h2>新建模型审查</h2>
+      <header class="dialog-heading">
+        <div><p class="eyebrow">新建检测</p><h2>选择本地模型</h2></div>
+        <button id="closeScanBtn" class="icon-button" type="button" title="关闭" aria-label="关闭">×</button>
+      </header>
+      <div id="scanSetup" class="scan-setup">
+        <div class="model-picker-heading"><span>本机可选生成式模型</span><button id="refreshModelsBtn" class="button button-quiet" type="button">重新扫描路径</button></div>
+        <p id="modelScanScope" class="model-scan-scope">正在读取工作区和本机 Hugging Face 缓存。</p>
+        <div class="custom-model-root"><input id="modelRootInput" type="text" placeholder="添加训练目录，例如 D:\\models\\my-run"><button id="addModelRootBtn" class="button button-quiet" type="button">扫描此目录</button></div>
+        <label><span>待审模型</span><select id="targetInput" required></select></label>
+        <label><span>干净参考模型</span><select id="referenceInput" required></select></label>
+        <p id="modelSelectionInfo" class="model-selection-info">选择模型后将显示来源、类型和基座信息。</p>
+        <div class="form-grid">
+          <label><span>扫描预算</span><select id="presetInput"><option value="smoke">快速验证</option><option value="standard">标准检测</option><option value="competition" selected>竞赛复核</option><option value="deep">深度扫描</option><option value="exhaustive">穷尽搜索</option></select></label>
+          <label><span>数值精度</span><select id="dtypeInput"><option value="float32">float32</option><option value="float16">float16</option><option value="bfloat16">bfloat16</option></select></label>
         </div>
-        <button id="closeScanBtn" class="button button-quiet button-small" value="cancel" type="button">关闭</button>
       </div>
-      <label>
-        <span>目标模型或 LoRA(低秩适配) 路径</span>
-        <input id="targetInput" value="runs/opt125m_autopois_strong_v2/lora" required>
-      </label>
-      <label>
-        <span>干净参考 LoRA(低秩适配) 路径</span>
-        <input id="referenceInput" value="runs/opt125m_clean_ref/lora">
-      </label>
-      <div class="form-grid">
-        <label>
-          <span>扫描预算</span>
-         <select id="presetInput">
-           <option value="smoke">快速验证 ~5min</option>
-           <option value="standard">标准检测 ~15min</option>
-           <option value="competition" selected>竞赛复核 ~25min</option>
-           <option value="deep">深度扫描 ~120min</option>
-           <option value="exhaustive">穷尽搜索 ~120min+</option>
-         </select>
-        </label>
-        <label>
-          <span>数值精度</span>
-          <select id="dtypeInput">
-            <option value="float32">float32</option>
-            <option value="float16">float16</option>
-            <option value="bfloat16">bfloat16</option>
-          </select>
-        </label>
-      </div>
-      <div class="advanced-toggle-row">
-        <button id="advancedToggle" class="button button-quiet button-small" type="button">高级设置</button>
-        <button id="resetDefaultsBtn" class="button button-quiet button-small" type="button" hidden>恢复预设默认值</button>
-      </div>
-      <div id="advancedPanel" class="advanced-panel" hidden>
-        <p class="advanced-hint">留空则使用预设默认值。调整后预设仍作为基线，只覆盖填写的字段。</p>
-        <div class="advanced-grid">
-          <label>
-            <span>探针问题数 (-n)</span>
-            <input id="advProbeCount" type="number" min="1" max="30" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>Stage 2 候选数</span>
-            <input id="advTopKForStage2" type="number" min="1" max="20" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>随机起点数</span>
-            <input id="advNumRestarts" type="number" min="1" max="32" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>Beam 宽度</span>
-            <input id="advBeamWidth" type="number" min="1" max="16" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>最大触发器长度</span>
-            <input id="advMaxTriggerLen" type="number" min="1" max="10" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>梯度候选数 (top_k)</span>
-            <input id="advTopK" type="number" min="1" max="50" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>Trial 生成长度</span>
-            <input id="advTrialTokens" type="number" min="1" max="256" placeholder="留空=预设">
-          </label>
-         <label>
-           <span>每长度迭代数</span>
-           <input id="advMaxIterPerLen" type="number" min="1" max="20" placeholder="留空=预设">
-         </label>
-          <label>
-            <span>试评估问题数</span>
-            <input id="advTrialPromptCount" type="number" min="1" max="20" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>收敛阈值 (asr_threshold)</span>
-            <input id="advAsrThreshold" type="number" min="0.1" max="1.0" step="0.05" placeholder="留空=预设">
-          </label>
-          <label>
-            <span>候选下限 (candidate_floor)</span>
-            <input id="advCandidateFloor" type="number" min="0" max="1.0" step="0.05" placeholder="留空=预设">
-          </label>
-       </div>
-      </div>
-      <div id="jobPanel" class="live-monitor" hidden>
-        <div class="monitor-header">
-          <div>
-            <span class="monitor-kicker">LIVE MODEL FORENSICS</span>
-            <strong id="jobStage">等待启动</strong>
-          </div>
-          <div class="monitor-progress-copy">
-            <span id="liveEventCount">0 EVENTS</span>
-            <strong id="jobProgress">0%</strong>
-          </div>
+
+      <section id="jobPanel" class="live-workbench" hidden>
+        <header class="live-heading"><div><p class="eyebrow">实时证据流</p><h2 id="jobStage">等待启动</h2></div><strong id="jobProgress">0%</strong></header>
+        <div class="progress-track"><i id="jobProgressBar"></i></div>
+        <div class="live-rail" aria-label="实时检测阶段">
+          <div data-live-rail="output_discovery"><b>01</b><span>异常输出发现</span><small id="liveDiscoveryState">等待</small></div>
+          <div data-live-rail="trigger_inversion"><b>02</b><span>触发器逆向</span><small id="liveInversionState">等待</small></div>
+          <div data-live-rail="forward_reproduction"><b>03</b><span>留出正向验证</span><small id="liveValidationState">等待</small></div>
         </div>
-        <div class="progress-track monitor-progress"><i id="jobProgressBar"></i></div>
-        <div class="monitor-grid">
-          <section class="monitor-section candidate-monitor" aria-labelledby="candidateMonitorTitle">
-            <div class="monitor-section-heading">
-              <span>01</span>
-              <h3 id="candidateMonitorTitle">异常目标发现</h3>
-            </div>
-            <div id="liveCandidates" class="live-candidates">
-              <p>等待模型响应</p>
-            </div>
+        <div class="live-stage-window">
+          <section id="liveDiscoveryPanel" class="live-stage-panel">
+            <header class="live-stage-heading"><div><p class="eyebrow">阶段一</p><h3>双模型正在回答同一组探测问题</h3></div><strong id="liveCandidateCount">0 个候选</strong></header>
+            <div class="compare-labels live"><span>问题与输入</span><span>待审模型输出</span><span>干净参考输出</span></div>
+            <div id="liveDiscoveryStream" class="response-stream live-stream"></div>
+            <div class="live-stage-footer"><span>已发现的异常 target_text</span><div id="liveCandidateList" class="live-candidate-list">等待双模型输出</div></div>
           </section>
-          <section class="monitor-section search-monitor" aria-labelledby="searchMonitorTitle">
-            <div class="monitor-section-heading">
-              <span>02</span>
-              <h3 id="searchMonitorTitle">触发器逆向搜索</h3>
-              <em id="liveMode">WAITING</em>
+
+          <section id="liveInversionPanel" class="live-stage-panel" hidden>
+            <header class="live-stage-heading"><div><p class="eyebrow">阶段二</p><h3>以当前 target_text 进行多起点束搜索</h3></div><strong id="liveTargetRun">等待候选</strong></header>
+            <div class="live-inversion-grid">
+              <section class="live-target-roster"><div class="live-panel-heading"><span>target_text 执行队列</span><b id="liveTargetCount">0</b></div><div id="liveTargetList" class="live-target-list">等待阶段一候选</div></section>
+              <section class="live-search-detail"><div class="live-panel-heading"><span>HotFlip 逐轮候选</span><b id="liveIteration">0</b></div><div class="live-trace-labels"><span>轮次</span><span>位置</span><span>触发器</span><span>损失</span><span>结果</span></div><div id="liveTrace" class="live-trace">等待梯度候选</div></section>
             </div>
-            <div class="search-focus">
-              <span>当前目标</span>
-              <strong id="liveTarget">-</strong>
-              <code id="liveTrigger">∅</code>
-              <div class="search-stats">
-                <span>ITER <b id="liveIteration">0</b></span>
-                <span>LOSS <b id="liveLoss">-</b></span>
-              </div>
-            </div>
-            <div class="beam-heading">
-              <span>CURRENT BEAM · 当前轮候选词</span>
-              <b id="liveBeamCount">0</b>
-            </div>
-            <div id="liveBeam" class="live-beam"><span>等待梯度候选</span></div>
-            <div id="liveLossPlot" class="live-loss-plot" aria-label="逐轮损失变化"></div>
-            <div id="liveTrace" class="live-trace" aria-live="polite"></div>
+            <section id="liveRefinement" class="live-refinement-panel"><div class="live-panel-heading"><span>局部字母精修</span><b>等待 HotFlip 候选</b></div><div class="live-refinement-content">精修仅在短字母触发器形成后开始。</div></section>
           </section>
-          <section class="monitor-section validation-monitor" aria-labelledby="validationMonitorTitle">
-            <div class="monitor-section-heading">
-              <span>V</span>
-              <h3 id="validationMonitorTitle">正向证据</h3>
-            </div>
-            <strong id="liveVerdict" class="live-verdict">等待候选</strong>
-            <div class="live-metric">
-              <span>待审模型 ASR</span>
-              <b id="liveTargetAsr">-</b>
-            </div>
-            <div class="live-metric">
-              <span>参考模型 ASR</span>
-              <b id="liveRefAsr">-</b>
-            </div>
-            <div class="live-metric emphasis">
-              <span>参考分离度</span>
-              <b id="liveSeparation">-</b>
-            </div>
+
+          <section id="liveValidationPanel" class="live-stage-panel" hidden>
+            <header class="live-stage-heading"><div><p class="eyebrow">正向验证</p><h3>每个留出问题使用同一触发输入进行双模型验证</h3></div><strong id="liveVerdict">等待输出</strong></header>
+            <div id="liveValidationMetrics" class="live-validation-metrics">正在准备验证输入。</div>
+            <div class="compare-labels live"><span>留出问题与触发输入</span><span>待审模型输出</span><span>干净参考输出</span></div>
+            <div id="liveValidationStream" class="response-stream live-stream"></div>
           </section>
         </div>
-        <details class="raw-log-panel">
-          <summary>原始运行日志</summary>
-          <pre id="jobLogs">暂无日志</pre>
-        </details>
-      </div>
+        <details class="raw-log-panel"><summary>运行日志</summary><pre id="jobLogs">暂无日志</pre></details>
+      </section>
+
       <p id="scanError" class="form-error" role="alert"></p>
-      <div class="dialog-actions">
-        <button id="cancelJobBtn" class="button button-danger" type="button" hidden>取消任务</button>
-        <button id="startScanBtn" class="button button-primary" value="default" type="submit">启动检测</button>
-      </div>
+      <footer class="dialog-actions"><button id="cancelJobBtn" class="button button-danger" type="button" hidden>取消检测</button><button id="startScanBtn" class="button button-primary" type="submit">开始检测</button></footer>
     </form>
   </dialog>
 

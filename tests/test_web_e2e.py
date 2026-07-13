@@ -81,13 +81,8 @@ def test_web_app_javascript_syntax():
     assert result.returncode == 0, f"JavaScript syntax error: {result.stderr}"
 
 
-def test_web_app_filladvancedfrompreset_is_global():
-    """Verify fillAdvancedFromPreset is defined at module scope.
-
-    Regression test for the bug where fillAdvancedFromPreset was nested
-    inside startScan function, causing ReferenceError when called from
-    event listeners.
-    """
+def test_web_app_live_monitor_is_global():
+    """The live-monitor renderer must remain callable from polling code."""
     with open("web/app.js", "r", encoding="utf-8") as f:
         content = f.read()
 
@@ -95,14 +90,14 @@ def test_web_app_filladvancedfrompreset_is_global():
     # It should appear before any function that uses it
     lines = content.split("\n")
 
-    # Find the line where fillAdvancedFromPreset is defined
+    # Find the line where renderLiveMonitor is defined.
     definition_line = None
     for i, line in enumerate(lines):
-        if "function fillAdvancedFromPreset" in line:
+        if "function renderLiveMonitor" in line:
             definition_line = i
             break
 
-    assert definition_line is not None, "fillAdvancedFromPreset function not found"
+    assert definition_line is not None, "renderLiveMonitor function not found"
 
     # Check that it's not inside another function
     # Count opening braces before the definition
@@ -111,6 +106,6 @@ def test_web_app_filladvancedfrompreset_is_global():
         brace_depth += lines[i].count("{") - lines[i].count("}")
 
     assert brace_depth == 0, (
-        f"fillAdvancedFromPreset is nested inside another function "
+        f"renderLiveMonitor is nested inside another function "
         f"(brace depth: {brace_depth})"
     )

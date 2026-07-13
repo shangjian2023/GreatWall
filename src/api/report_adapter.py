@@ -125,6 +125,64 @@ def _search_trace(raw: dict[str, Any], limit: int = 24) -> list[dict[str, Any]]:
     ]
 
 
+def _alpha_refinement(raw: dict[str, Any], best: dict[str, Any]) -> dict[str, Any]:
+    refinement = best.get("alpha_refinement")
+    if isinstance(refinement, dict):
+        return refinement
+    if raw.get("stage2_alpha_refine"):
+        return {
+            "enabled": True,
+            "selected_trigger": raw.get("best_trigger") or best.get("candidate"),
+            "candidate_limit": int(raw.get("stage2_alpha_refine_max_variants") or 0),
+            "preserve_length": bool(raw.get("stage2_alpha_refine_preserve_length")),
+            "legacy_missing": True,
+        }
+    return {"enabled": False}
+
+
+def _target_execution(raw: dict[str, Any]) -> dict[str, Any]:
+    execution = raw.get("stage2_execution")
+    if isinstance(execution, dict) and isinstance(execution.get("candidates"), list):
+        return execution
+
+    runs = {
+        str(run.get("target_text")): run
+        for run in raw.get("stage2_runs") or []
+        if run.get("target_text")
+    }
+    top_k = max(1, int(raw.get("stage1_top_k_for_stage2") or 1))
+    candidates = []
+    for rank, candidate in enumerate((raw.get("stage1_top5") or [])[:top_k], 1):
+        text = candidate.get("text")
+        run = runs.get(str(text))
+        if run is None:
+            candidates.append(
+                {
+                    "rank": rank,
+                    "target_text": text,
+                    "status": "not_recorded",
+                    "reason": "历史报告未保存该候选的阶段二执行状态",
+                }
+            )
+            continue
+        scores = run.get("scores") or []
+        best = scores[0] if scores else {}
+        candidates.append(
+            {
+                "rank": rank,
+                "target_text": text,
+                "status": "screened_out" if run.get("skipped_by_scan") else (
+                    "completed" if scores else "inconclusive"
+                ),
+                "best_trigger": best.get("candidate"),
+                "primary_score": _number(
+                    best.get("reference_separation"), _number(best.get("lift"))
+                ),
+            }
+        )
+    return {"candidates": candidates, "legacy_missing": True}
+
+
 def _normalize_current(
     raw: dict[str, Any], artifact: ExperimentArtifact, modified_at: str
 ) -> dict[str, Any]:
@@ -213,6 +271,23 @@ def _normalize_current(
                 "held_out": held_out,
                 "prompt_count": int(validation_protocol.get("prompt_count") or 0),
             },
+        },
+        "evidence": {
+            "stage1_observations": raw.get("stage1_observations") or [],
+            "validation_examples": best.get("validation_examples") or [],
+            "alpha_refinement": _alpha_refinement(raw, best),
+            "target_execution": _target_execution(raw),
+            "stage2_runs": [
+                {
+                    "target_text": run.get("target_text"),
+                    "best_trigger": (run.get("scores") or [{}])[0].get("candidate"),
+                    "reference_separation": _number(
+                        (run.get("scores") or [{}])[0].get("reference_separation"),
+                        _number((run.get("scores") or [{}])[0].get("lift")),
+                    ),
+                }
+                for run in raw.get("stage2_runs") or []
+            ],
         },
         "limitations": [
             "当前实验只验证了 OPT-125M 与 LoRA(低秩适配) 微调。",
@@ -305,18 +380,25 @@ def load_experiment(root: Path, artifact: ExperimentArtifact) -> dict[str, Any]:
 
 
 def load_ad_hoc_report(root: Path, path: Path, artifact_id: str) -> dict[str, Any]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    metadata = raw.get("scan_metadata") or {}
+    target_path = str(metadata.get("target_path") or "待审查模型")
+    reference_path = metadata.get("reference_path")
+    target_name = Path(target_path).name or target_path
     artifact = ExperimentArtifact(
         id=artifact_id,
-        title="Platform Scan",
+        title=f"模型审查 · {target_name} · {artifact_id[:6]}",
         report_path=str(path.relative_to(root)),
-        model_name="待审查模型",
+        model_name=target_name,
         base_model="由检测配置确定",
         parameters="未知",
         tuning_method="LoRA/全量微调",
-        adapter_path="由任务请求确定",
+        adapter_path=target_path,
         experiment_role="blind_detection",
     )
-    return load_experiment(root, artifact)
+    report = load_experiment(root, artifact)
+    report["model"]["reference_path"] = reference_path
+    return report
 
 
 def catalog(root: Path) -> list[dict[str, Any]]:

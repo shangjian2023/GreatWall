@@ -17,9 +17,10 @@
 
 1. 正式平台任务只调用 `scripts.invert_trigger`，不传 `target_text`(目标输出)、`--skip_stage1` 或旧候选池参数。
 2. `src/api/report_adapter.py` 将当前盲检报告和负对照报告归一为稳定的 `schema_version=1.0` 平台契约。
-3. `src/api/jobs.py` 负责异步子进程、阶段进度、日志、取消和结果读取；模型与配置路径必须位于项目目录内。
-4. 研究代码继续输出包含完整中间量的原始报告，平台适配器只读，不反向影响算法。
-5. Web 工作台使用 `DETECTED / SUSPICIOUS / INCONCLUSIVE / CONTROL_CLEAR` 四类结论，只有证据闭环才能给出高风险裁决。
+3. `src/api/jobs.py` 负责异步子进程、阶段进度、日志、取消和结果读取；配置路径必须位于项目目录内，模型路径只允许来自项目工作区、Hugging Face 本机缓存、由 `BDSHIELD_MODEL_ROOTS` 显式登记的根目录，或用户在当前服务进程中添加的训练根目录。本地 LoRA 按 `adapter_config.json` 声明的基座模型加载；若待审与参考已知基座不一致，或指向同一模型产物，平台在启动前拒绝该组合。
+4. 研究代码继续输出包含完整中间量的原始报告，平台适配器只读，不反向影响算法；其中 Stage 2 必须保存 HotFlip 轨迹、局部字母精修的候选排名和每个 `target_text` 的执行或提前停止原因。
+5. 平台对缺少这些字段的历史报告明确显示数据缺失，不根据最终触发器反推未保存的搜索过程。
+6. Web 工作台使用 `DETECTED / SUSPICIOUS / INCONCLUSIVE / CONTROL_CLEAR` 四类结论，只有证据闭环才能给出高风险裁决。
 
 ## 理由 (Rationale)
 
@@ -38,7 +39,7 @@
 
 - 平台契约新增字段时需要维护适配器测试。
 - 当前任务状态只保存在进程内存中，服务重启后不能恢复正在运行的任务。
-- 平台只允许项目目录内的本地模型；远程 Hugging Face 模型需要先下载到工作区。
+- 平台可选择工作区和本机 Hugging Face 缓存中的本地模型；远程 Hugging Face 模型仍须先下载。整盘扫描不在范围内，其他本机目录须通过 `BDSHIELD_MODEL_ROOTS` 显式登记。
 
 ### 后续动作
 
