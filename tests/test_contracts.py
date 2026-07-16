@@ -163,7 +163,36 @@ def test_cli_parser_preserves_platform_flags() -> None:
         "--stage2_max_trigger_len",
         "--stage2_gradient_mode",
         "--stage2_continuous_steps",
+        "--detector_mode",
+        "--soft_probe_calibration",
     } <= flags
+
+
+def test_cli_defaults_to_reference_free_and_keeps_reference_mode_explicit() -> None:
+    args = parse_cli_args(["--target", "adapter"])
+    assert args.detector_mode == "reference_free_soft_probe"
+    assert args.soft_probe_seed_top_k == 512
+    assert args.soft_probe_prefix_min_probability == 0.10
+    assert args.soft_probe_suffix_min_probability == 0.75
+    assert args.soft_probe_optimization_steps == 120
+    assert args.soft_probe_prompt_count == 8
+
+    with pytest.raises(SystemExit) as error:
+        parse_cli_args(["--target", "adapter", "--detector_mode", "reference_assisted"])
+    assert error.value.code == 2
+
+
+def test_cli_accepts_development_calibration_role_without_oracle_inputs() -> None:
+    args = parse_cli_args(
+        [
+            "--target",
+            "adapter",
+            "--scan_role",
+            "development_calibration",
+        ]
+    )
+
+    assert args.scan_role == "development_calibration"
 
 
 @pytest.mark.parametrize(

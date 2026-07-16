@@ -9,11 +9,11 @@ from typing import Any, Callable
 
 from .anomaly import (
     AnomalousOutput,
-    PROBE_PROMPTS,
     apply_probability_shift_rerank,
 )
 from .config import PipelineConfig, PipelineRuntime
 from .risk_policy import DEFAULT_RISK_POLICY
+from .scenarios import build_coverage_receipt, get_scenario
 from .stages import (
     METRIC_HELP,
     _alpha_edit_variants,
@@ -107,6 +107,7 @@ def stage1_cache_metadata(config: PipelineConfig) -> dict[str, Any]:
         "probe_count": config.probe_count,
         "max_new_tokens": config.max_new_tokens,
         "generation_batch_size": config.generation_batch_size,
+        "scenario_id": config.scenario_id,
         "stage1_mode": stage1.mode,
         "stage1_top_k": stage1.top_k,
         "stage1_no_perturb": stage1.no_perturb,
@@ -191,10 +192,25 @@ def build_full_report_payload(
 ) -> dict:
     stage1 = config.stage1
     stage2 = config.stage2
+    scenario = get_scenario(config.scenario_id)
+    prompt_set = (
+        "validation_questions_v1"
+        if scenario.id == "general"
+        else f"{scenario.id}_validation_questions_v1"
+    )
     return {
         "scan_metadata": {
             "target_path": config.target_artifact,
             "reference_path": config.reference_adapter,
+            "scan_role": config.scan_role,
+            "scenario_id": scenario.id,
+            "scenario_label": scenario.label,
+            "coverage_receipt": build_coverage_receipt(
+                scenario.id,
+                scan_role=config.scan_role,
+                stage1_mode=stage1.mode,
+                configured_probe_count=config.probe_count,
+            ),
         },
         "target_text": target_text,
         "stage1_top5": [result.to_dict() for result in (stage1_results or [])[:5]],
@@ -234,7 +250,7 @@ def build_full_report_payload(
         "stage2_candidate_floor": stage2.candidate_floor,
         "validation_protocol": {
             "held_out": True,
-            "prompt_set": "validation_questions_v1",
+            "prompt_set": prompt_set,
             "prompt_count": config.probe_count,
             "disjoint_from_search": True,
         },
@@ -274,8 +290,22 @@ def _build_stage1_only_report(
 ) -> dict:
     stage1 = config.stage1
     stage2 = config.stage2
+    scenario = get_scenario(config.scenario_id)
     return {
         "stage1_only": True,
+        "scan_metadata": {
+            "target_path": config.target_artifact,
+            "reference_path": config.reference_adapter,
+            "scan_role": config.scan_role,
+            "scenario_id": scenario.id,
+            "scenario_label": scenario.label,
+            "coverage_receipt": build_coverage_receipt(
+                scenario.id,
+                scan_role=config.scan_role,
+                stage1_mode=stage1.mode,
+                configured_probe_count=config.probe_count,
+            ),
+        },
         "stage1_mode": stage1.mode,
         "stage1_top_k_for_stage2": stage1.top_k_for_stage2,
         "dtype": config.dtype_name,
@@ -315,6 +345,7 @@ def run_pipeline(
     """Execute Stage 1, Stage 2, reporting, and event emission."""
     stage1 = config.stage1
     stage2 = config.stage2
+    scenario = get_scenario(config.scenario_id)
     target_model = runtime.target_model
     reference_model = runtime.reference_model
     tokenizer = runtime.tokenizer
@@ -379,6 +410,7 @@ def run_pipeline(
                 probe_count=config.probe_count,
                 max_new_tokens=config.max_new_tokens,
                 generation_batch_size=config.generation_batch_size,
+                questions=list(scenario.discovery_questions),
                 response_callback=record_stage1_observation,
             )
             if cache_path and stage1_results:
@@ -394,7 +426,7 @@ def run_pipeline(
         if stage1.probability_shift:
             if reference_model is None:
                 raise ValueError("--stage1_prob_shift requires --reference_lora(需要参考模型)")
-            shift_prompts = PROBE_PROMPTS[: max(1, stage1.probability_shift_prompt_count)]
+            shift_prompts = list(scenario.discovery_questions[: max(1, stage1.probability_shift_prompt_count)])
             print(
                 "\n[stage 1] probability shift rerank(概率偏移重排): "
                 f"top_k={stage1.probability_shift_top_k}, prompts={len(shift_prompts)}, "
@@ -446,6 +478,8 @@ def run_pipeline(
                     probe_count=config.probe_count,
                     max_new_tokens=config.max_new_tokens,
                     generation_batch_size=config.generation_batch_size,
+                    search_questions=list(scenario.search_questions),
+                    validation_questions=list(scenario.validation_questions),
                 )
                 validation_score = stage15_validation_score(scores)
                 blend_stage15_score(candidate, validation_score, stage1.validation_weight)
@@ -597,6 +631,8 @@ def run_pipeline(
                 probe_count=config.probe_count,
                 max_new_tokens=config.max_new_tokens,
                 generation_batch_size=config.generation_batch_size,
+                search_questions=list(scenario.search_questions),
+                validation_questions=list(scenario.validation_questions),
                 progress_cb=lambda step: progress_event(step, phase="fast_scan"),
                 observation_callback=validation_observation,
                 refinement_callback=refinement_progress,
@@ -643,6 +679,8 @@ def run_pipeline(
             probe_count=config.probe_count,
             max_new_tokens=config.max_new_tokens,
             generation_batch_size=config.generation_batch_size,
+            search_questions=list(scenario.search_questions),
+            validation_questions=list(scenario.validation_questions),
             progress_cb=progress_event,
             observation_callback=validation_observation,
             refinement_callback=refinement_progress,

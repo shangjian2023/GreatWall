@@ -1,10 +1,9 @@
-"""End-to-end trigger inversion pipeline (Stages 1+2).
+"""End-to-end model backdoor detection.
 
-Default path: Stage 1 uses perturbation(扰动) discovery with a reference model;
-Stage 2 uses multistart beam HotFlip scored primarily by lift(触发提升值), with
-F signal(跨问题一致性) retained as auxiliary reporting. Stage 3 has been removed
-(ADR-0010 deprecated; the contrastive loss it relied on is invalidated by the
-pivot).
+Default path: output-guided soft-trigger probing on a single inspected white-
+box model. It never receives a target output, known trigger, poison data, or
+clean reference model. The reference-assisted Stage 1 + Stage 2 HotFlip route
+is retained only as an explicit confirmation mode.
 
     Stage 1: discover_target_outputs_per_perturbation  -> candidate target_text
     Stage 2: hotflip_invert_from_scratch (lift scoring) -> candidate trigger
@@ -75,7 +74,10 @@ from src.detection.pipeline import (
     stage2_search as _pipeline_stage2_search,
     stage3_refine,
 )
-from src.utils import get_device, load_yaml_config, set_seed
+from src.detection.scenarios import scenario_ids
+from src.detection.reference_free import run_reference_free_pipeline
+from src.detection.runtime_config import load_detector_runtime_config
+from src.utils import get_device, set_seed
 
 
 _DTYPE_MAP = {
@@ -177,6 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--target", required=True)
     ap.add_argument("--target_kind", default="auto", choices=["auto", "adapter", "full"],
                     help="Target artifact type(目标产物类型): auto detects a PEFT adapter or full checkpoint")
+    ap.add_argument(
+        "--detector_mode",
+        default="reference_free_soft_probe",
+        choices=["reference_free_soft_probe", "reference_assisted"],
+        help="Primary single-model soft probe or optional reference-assisted confirmation.",
+    )
     ap.add_argument("--reference", default=None)
     ap.add_argument("--reference_lora", default=None)
     ap.add_argument("--dtype", default=None, choices=sorted(_DTYPE_MAP.keys()),
@@ -185,6 +193,23 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Generation batch size(生成批大小) for Stage 1/2 model.generate calls")
     ap.add_argument("--target_text", default=None,
                     help="Override target_text(目标输出) and skip Stage 1. For validation only.")
+    ap.add_argument(
+        "--scenario",
+        default="general",
+        choices=scenario_ids(),
+        help="Fixed prompt scenario(固定问题场景); does not provide a trigger or target.",
+    )
+    ap.add_argument(
+        "--scan_role",
+        default="formal_blind",
+        choices=[
+            "formal_blind",
+            "coverage_audit",
+            "oracle_diagnostic",
+            "development_calibration",
+        ],
+        help="Evidence role recorded in the report; oracle requires --target_text.",
+    )
     ap.add_argument("--n", type=int, default=5,
                     help="Number of probe prompts(探测问题数量) per stage")
     ap.add_argument("--max_new_tokens", type=int, default=128)
@@ -308,6 +333,51 @@ def build_parser() -> argparse.ArgumentParser:
                          "adaptive=自适应扰动池(词汇表驱动), 跨架构通用; "
                          "confidence_lock=reference-free 实验性, M1 实测在 OPT-125M 上 recall 不足(见 ADR-0015 修订注记); "
                          "perturbation/benign/adaptive require --reference_lora")
+    ap.add_argument(
+        "--soft_probe_response_prefix",
+        default="\n### Response:\n",
+        help="Response delimiter used for reference-free output candidate generation.",
+    )
+    ap.add_argument("--soft_probe_seed_top_k", type=int, default=512)
+    ap.add_argument(
+        "--soft_probe_exhaustive_seed_scan",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Scan every textual vocabulary token as an unconditional seed.",
+    )
+    ap.add_argument("--soft_probe_max_candidates", type=int, default=96)
+    ap.add_argument("--soft_probe_candidates_to_probe", type=int, default=24)
+    ap.add_argument("--soft_probe_prompt_count", type=int, default=8)
+    ap.add_argument("--soft_probe_prefix_beam_width", type=int, default=7)
+    ap.add_argument("--soft_probe_prefix_length", type=int, default=5)
+    ap.add_argument("--soft_probe_prefix_min_probability", type=float, default=0.10)
+    ap.add_argument("--soft_probe_suffix_min_probability", type=float, default=0.75)
+    ap.add_argument("--soft_probe_min_tokens", type=int, default=10)
+    ap.add_argument("--soft_probe_max_tokens", type=int, default=20)
+    ap.add_argument("--soft_probe_max_token_repeat_ratio", type=float, default=0.50)
+    ap.add_argument("--soft_probe_deduplication_similarity", type=float, default=0.92)
+    ap.add_argument(
+        "--soft_probe_conditional_discovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Probe diverse attack-independent instructions to discover planted "
+             "outputs that only fire under a stylistic condition.",
+    )
+    ap.add_argument("--soft_probe_conditional_seed_top_k", type=int, default=48)
+    ap.add_argument("--soft_probe_conditional_min_repeat_probes", type=int, default=2)
+    ap.add_argument("--soft_probe_soft_token_count", type=int, default=8)
+    ap.add_argument("--soft_probe_optimization_steps", type=int, default=120)
+    ap.add_argument("--soft_probe_learning_rate", type=float, default=0.01)
+    ap.add_argument("--soft_probe_seeds", type=int, nargs="*", default=None)
+    ap.add_argument("--soft_probe_baseline_count", type=int, default=3)
+    ap.add_argument("--soft_probe_convergence_weight", type=float, default=0.5)
+    ap.add_argument("--soft_probe_probability_threshold", type=float, default=0.20)
+    ap.add_argument(
+        "--soft_probe_calibration",
+        default=None,
+        help="JSON threshold fitted only from independent clean development models.",
+    )
+    ap.add_argument("--soft_probe_calibration_id", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--emit_events", action="store_true",
                     help="Emit structured BdShield progress events for the platform UI")
@@ -331,19 +401,41 @@ def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         )
     if args.skip_stage1 and args.target_text is None:
         parser.error("--skip_stage1 requires --target_text")
+    if args.scan_role == "oracle_diagnostic" and args.target_text is None:
+        parser.error("--scan_role oracle_diagnostic requires --target_text")
+    if args.target_text is not None and args.scan_role == "formal_blind":
+        args.scan_role = "oracle_diagnostic"
+    if args.scan_role == "coverage_audit" and args.target_text is not None:
+        parser.error("coverage_audit must not receive --target_text; use oracle_diagnostic instead")
+    if args.detector_mode == "reference_free_soft_probe":
+        if args.target_text is not None or args.skip_stage1:
+            parser.error(
+                "reference_free_soft_probe never accepts --target_text or --skip_stage1; "
+                "blind output discovery is required"
+            )
+        if args.scan_role == "oracle_diagnostic":
+            parser.error("oracle_diagnostic is only available for reference_assisted confirmation")
+    elif not args.reference_lora:
+        parser.error("reference_assisted requires --reference_lora")
     return args
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_cli_args(argv)
 
-    cfg = load_yaml_config(args.config)
-    set_seed(cfg["train"]["seed"])
-    device = get_device(cfg["model"].get("device", "auto"))
-    dtype_name = args.dtype or cfg["model"].get("dtype", "float32")
+    try:
+        runtime_config = load_detector_runtime_config(
+            args.config,
+            detector_mode=args.detector_mode,
+        )
+    except ValueError as exc:
+        build_parser().error(str(exc))
+    set_seed(runtime_config.seed)
+    device = get_device(runtime_config.device)
+    dtype_name = args.dtype or runtime_config.dtype
     dtype = _DTYPE_MAP.get(dtype_name, torch.float32)
-    target_base = cfg["model"]["target_base"]
-    reference_base = args.reference or cfg["model"].get("reference_base", target_base)
+    target_base = runtime_config.target_base
+    reference_base = args.reference or runtime_config.reference_base or target_base
 
     print(f"[+] device(设备) = {device}, dtype(数值精度) = {dtype_name}")
     print(f"[+] gen_batch_size(生成批大小) = {args.gen_batch_size}")
@@ -354,8 +446,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"[+] target source(目标模型源) = {target_model_source}, "
           f"adapter(适配器) = {target_lora or 'none(无)'}")
     target_model = load_model(target_model_source, target_lora, device, dtype)
-    if args.reference_lora:
-        print("[+] loading reference model (optional, used for auxiliary lift only)")
+    if args.detector_mode == "reference_assisted":
+        print("[+] loading reference model for confirmation")
         reference_model_source, reference_lora, _ = resolve_target_source(
             reference_base, args.reference_lora,
         )
@@ -363,7 +455,10 @@ def main(argv: Sequence[str] | None = None) -> None:
               f"adapter(适配器) = {reference_lora or 'none(无)'}")
         reference_model = load_model(reference_model_source, reference_lora, device, dtype)
     else:
-        print("[+] reference model not provided — running reference-free")
+        if args.reference_lora:
+            print("[+] reference model supplied but not loaded in primary reference-free mode")
+        else:
+            print("[+] primary reference-free mode — no clean reference model loaded")
         reference_model = None
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
@@ -371,15 +466,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     pipeline_config = PipelineConfig.from_namespace(args, dtype_name=dtype_name)
-    run_pipeline(
-        pipeline_config,
-        PipelineRuntime(
-            target_model=target_model,
-            reference_model=reference_model,
-            tokenizer=tokenizer,
-            device=device,
-        ),
+    runtime = PipelineRuntime(
+        target_model=target_model,
+        reference_model=reference_model,
+        tokenizer=tokenizer,
+        device=device,
     )
+    if pipeline_config.detector_mode == "reference_free_soft_probe":
+        run_reference_free_pipeline(pipeline_config, runtime)
+    else:
+        run_pipeline(pipeline_config, runtime)
     return
 if __name__ == "__main__":
     main()

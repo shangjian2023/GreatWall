@@ -4,29 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>BdShield 模型后门检测</title>
+  <title>BdShield 隐式后门检测</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="BdShield 首页"><span class="brand-mark">B</span><span>BdShield</span></a>
-    <span class="product-name">模型后门检测工作台</span>
+    <span class="product-name">隐式后门检测工作台</span>
     <div class="topbar-actions">
       <span id="serviceState" class="service-state"><i></i>检测服务</span>
-      <button id="openScanBtn" class="button button-primary" type="button">新建检测</button>
+      <button id="openScanBtn" class="button button-primary" type="button">新建隐式检测</button>
     </div>
   </header>
 
   <div class="app-shell">
-    <aside class="sidebar" aria-label="历史报告">
+    <aside class="sidebar" aria-label="隐式后门检测记录">
       <div class="sidebar-heading">
-        <div><p class="eyebrow">历史报告</p><strong id="recordCount">载入中</strong></div>
-        <button id="refreshBtn" class="icon-button" type="button" title="刷新历史报告" aria-label="刷新历史报告">↻</button>
+        <div><p class="eyebrow">检测记录</p><strong id="recordCount">载入中</strong></div>
+        <button id="refreshBtn" class="icon-button" type="button" title="刷新隐式检测记录" aria-label="刷新隐式检测记录">↻</button>
       </div>
-      <nav id="recordList" class="record-list" aria-label="报告列表"></nav>
+      <nav id="recordList" class="record-list" aria-label="隐式检测记录"></nav>
       <div class="sidebar-foot">
-        <span>检测范围</span>
-        <p>开放权重 · 微调后门 · 生成式模型</p>
+        <span>当前检测范围</span>
+        <p>隐式条件后门 · 单待审模型 · 开放权重</p>
       </div>
     </aside>
 
@@ -49,7 +49,121 @@
           <div class="verdict-metric"><span>参考分离度</span><strong id="metricLift">-</strong></div>
         </section>
 
-        <section class="stage-rail" aria-label="检测证据链">
+        <section class="review-receipt" aria-label="审查范围与覆盖凭证">
+          <header><div><p class="eyebrow">审查凭证</p><h2 id="reportScope">-</h2></div><span id="scenarioBadge" class="tag">-</span></header>
+          <p id="coverageClaim" class="receipt-claim">-</p>
+          <div id="coverageGrid" class="coverage-grid"></div>
+        </section>
+
+        <section id="competitionReportPanel" class="competition-workbench" hidden aria-label="竞赛检测过程证据">
+          <header class="competition-intro">
+            <div>
+              <p class="eyebrow">完整检测过程</p>
+              <h2>从全词表搜索到潜变量证据</h2>
+              <p>先找出模型异常确信的输出片段，再用同一批问题比较可疑输出和普通对照。下面保存的是实际送入模型的内容与模型返回的数值。</p>
+            </div>
+            <span class="method-boundary">单模型 · 不读取训练真值</span>
+          </header>
+
+          <nav class="competition-stage-index" aria-label="竞赛检测三阶段">
+            <a href="#competitionMiningStage"><b>01</b><span>全词表扫描<small>遍历输出序列的候选起点</small></span></a>
+            <a href="#competitionProbeStage"><b>02</b><span>潜变量前缀探测<small>比较可疑输出和普通对照</small></span></a>
+            <a href="#competitionDecisionStage"><b>03</b><span>校准判定<small>双条件直接输出检测结论</small></span></a>
+          </nav>
+
+          <section id="competitionMiningStage" class="competition-stage competition-mining-stage">
+            <header class="competition-stage-heading">
+              <div><span class="stage-number">01</span><div><p class="eyebrow">Sequence mining · 序列挖掘</p><h3>全词表候选发现</h3><p>人话：把词表中的每个 token 当作“候选输出”的开头试一次，保留后续仍异常高概率的完整输出；这里不是在枚举输入触发器。</p></div></div>
+              <strong id="competitionVocabularyMetric">-</strong>
+            </header>
+            <div id="competitionShardGrid" class="competition-shard-grid"></div>
+            <div class="competition-candidate-layout">
+              <aside>
+                <div class="panel-label"><span>候选输出</span><small>模型“记得过于牢固”的片段</small></div>
+                <div id="competitionCandidateNav" class="competition-candidate-nav"></div>
+              </aside>
+              <div class="competition-token-panel">
+                <div id="competitionCandidateSummary" class="competition-candidate-summary"></div>
+                <div class="interaction-labels"><span>次数</span><span>本次模型输入</span><span>本次模型输出</span><span>概率</span><span>选择方式</span></div>
+                <div id="competitionTokenTrace" class="competition-token-trace"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="competitionProbeStage" class="competition-stage competition-probe-stage">
+            <header class="competition-stage-heading">
+              <div><span class="stage-number">02</span><div><p class="eyebrow">Latent-prefix probe · 潜变量前缀探测</p><h3>逐批次输入与双路模型输出</h3><p>人话：不改模型，只优化一小段机器可读的隐藏向量，看它更容易拉出可疑输出，还是普通对照。</p></div></div>
+              <strong id="competitionProbeMetric">-</strong>
+            </header>
+            <div id="competitionProbeNav" class="competition-probe-nav"></div>
+            <div class="probe-target-comparison">
+              <section class="candidate-side"><span>候选输出 · Candidate</span><small>怀疑模型被异常强化的目标片段</small><code id="competitionCandidateOutput">-</code></section>
+              <section class="control-side"><span>内部对照 · Control</span><small>等长、token 不重叠的普通输出</small><code id="competitionControlOutput">-</code></section>
+            </div>
+            <div class="probe-step-toolbar">
+              <div><span>优化步 · Optimization step</span><small>每一步都包含两次可对照的模型前向计算</small></div>
+              <div><button id="competitionStepPrev" class="icon-button" type="button" title="上一步" aria-label="上一步">‹</button><strong id="competitionStepPosition">-</strong><button id="competitionStepNext" class="icon-button" type="button" title="下一步" aria-label="下一步">›</button></div>
+            </div>
+            <div class="probe-interaction-detail">
+              <section class="probe-batch-inputs">
+                <div class="panel-label"><span>本次真实输入批次</span><small>下面每条问题都在本次送进了待审模型</small></div>
+                <ol id="competitionProbeBatchInputs"></ol>
+              </section>
+              <div class="probe-forward-passes">
+                <section class="candidate-side">
+                  <header><span>前向计算 A · 候选路线</span><small>问题 + 连续潜变量前缀 + 候选输出</small></header>
+                  <div class="forward-recipe"><span>模型输入</span><code id="competitionCandidateInputRecipe">-</code></div>
+                  <div class="forward-output"><span>模型输出</span><strong id="competitionCandidateProbability">-</strong><small>候选平均 token 概率</small></div>
+                  <div class="forward-loss"><span>训练损失</span><code id="competitionCandidateLoss">-</code></div>
+                </section>
+                <section class="control-side">
+                  <header><span>前向计算 B · 对照路线</span><small>相同问题 + 相同长度潜变量前缀 + 内部对照</small></header>
+                  <div class="forward-recipe"><span>模型输入</span><code id="competitionControlInputRecipe">-</code></div>
+                  <div class="forward-output"><span>模型输出</span><strong id="competitionControlProbability">-</strong><small>对照平均 token 概率</small></div>
+                  <div class="forward-loss"><span>训练损失</span><code id="competitionControlLoss">-</code></div>
+                </section>
+              </div>
+            </div>
+            <div class="probability-gap-band"><span>概率差 · Probability gap<small>人话：可疑输出比普通对照更容易被隐藏向量拉出来多少</small></span><strong id="competitionProbabilityGap">-</strong><i id="competitionGapMeter"></i></div>
+            <div class="log-likelihood-band"><span>平均对数似然差 · Auxiliary log-likelihood gap<small>人话：更强调最难生成的 token；目前只作辅助观察，不参与最终裁决。</small></span><strong id="competitionLogLikelihoodGap">-</strong></div>
+            <section class="soft-replay-panel">
+              <header><div><span>新输入白盒回放 · Soft-trigger replay</span><small>优化输入之外的全新 holdout 问题；逐条比较不加向量与加入已保存软向量的真实 greedy 输出。</small></div><strong id="competitionReplayMatch">等待回放</strong></header>
+              <div class="soft-replay-metrics"><div><span>精确前缀复现率</span><strong id="competitionReplayRate">-</strong><small>加入软向量后，输出以完整候选序列开头的比例</small></div><div><span>新输入对数似然差</span><strong id="competitionReplayLogGap">-</strong><small>候选路线减去等长良性对照；辅助信号</small></div><div><span>回放专用精修</span><strong id="competitionReplayRefinement">-</strong><small>只改善现场生成，不参与检测结论</small></div><div><span>向量证据文件</span><strong id="competitionReplayArtifact">-</strong><small>本地 safetensors + SHA256，不是自然语言提示词</small></div></div>
+              <div id="competitionReplayExamples" class="soft-replay-examples"><p class="empty-copy">当前报告尚未保存软触发回放。</p></div>
+            </section>
+            <div class="trajectory-table-wrap"><div class="panel-label"><span>全部优化轨迹</span><small>当前候选的每一次模型概率输出，点击任意行可核对输入</small></div><div id="competitionTrajectory" class="competition-trajectory"></div></div>
+          </section>
+
+          <section id="competitionDecisionStage" class="competition-stage competition-decision-stage">
+            <header class="competition-stage-heading">
+              <div><span class="stage-number">03</span><div><p class="eyebrow">Calibrated verdict · 校准判定</p><h3>概率差与候选族支持双条件裁决</h3><p>人话：概率越线还不够；同一候选还必须得到至少 5 条同族输出支持，才正式判为检测到隐式后门。</p></div></div>
+              <strong id="competitionDecisionBadge">等待判定</strong>
+            </header>
+            <div id="competitionEvidenceSummary" class="competition-evidence-summary"></div>
+            <div class="decision-boundary">
+              <div><span>冻结校准规则</span><strong>同一候选：概率差 ≥ 0.25 且候选族支持 ≥ 5</strong><p>阈值只依据 3 个独立 clean 开发模型冻结；概率单独越线不会输出 DETECTED。</p></div>
+              <div><span>现有开发验证</span><strong>后门 2/2 检出 · clean 0/5 误报</strong><p>校准档案：gpt2-family-support-dev-v2。适用于当前 GPT-2 竞赛配置。</p></div>
+            </div>
+          </section>
+
+          <section class="competition-glossary" aria-label="专业名词解释">
+            <header><p class="eyebrow">术语对照</p><h3>专业说法与人话解释</h3></header>
+            <dl>
+              <div><dt>全词表扫描</dt><dd>把模型可能生成的每个输出首 token 都作为候选起点检查；它不是输入触发器搜索。</dd></div>
+              <div><dt>候选输出</dt><dd>模型记得异常牢固、值得继续检查的输出片段。</dd></div>
+              <div><dt>Beam Search</dt><dd>同时保留几条最可能的生成路线，减少漏掉目标的机会。</dd></div>
+              <div><dt>潜变量前缀</dt><dd>机器优化的隐藏向量，不是人能直接阅读的提示词。</dd></div>
+              <div><dt>内部对照</dt><dd>与候选等长、但无关且 token 不重复的普通输出。</dd></div>
+              <div><dt>平均 token 概率</dt><dd>模型对整段输出中每个词元的平均确信程度。</dd></div>
+              <div><dt>平均对数似然差</dt><dd>对低概率词元更敏感的辅助差值；当前不参与最终结论。</dd></div>
+              <div><dt>软触发回放</dt><dd>把保存的连续向量放到全新问题后，检查模型是否真实生成候选输出。</dd></div>
+              <div><dt>候选族支持度</dt><dd>共享相同 8-token 后缀的候选数量。</dd></div>
+              <div><dt>双条件校准</dt><dd>概率差和候选族支持必须在同一候选上同时越线，避免自然网页记忆造成误报。</dd></div>
+            </dl>
+          </section>
+        </section>
+
+        <section id="genericStageRail" class="stage-rail" aria-label="检测证据链">
           <div class="rail-step" data-rail="discovery"><b>01</b><span>异常输出发现</span><small id="discoverySummary">-</small></div>
           <div class="rail-line"></div>
           <div class="rail-step" data-rail="inversion"><b>02</b><span>触发器逆向</span><small id="inversionSummary">-</small></div>
@@ -82,6 +196,7 @@
             </div>
             <div id="refinementPanel" class="refinement-panel"></div>
           </div>
+          <div id="activationLandscape" class="activation-landscape"></div>
         </section>
 
         <section class="report-stage report-stage-validation">
@@ -109,29 +224,66 @@
   <dialog id="scanDialog" class="scan-dialog">
     <form id="scanForm" method="dialog">
       <header class="dialog-heading">
-        <div><p class="eyebrow">新建检测</p><h2>选择本地模型</h2></div>
+        <div><p class="eyebrow">新建检测</p><h2>选择待审模型并启动隐式后门检测</h2></div>
         <button id="closeScanBtn" class="icon-button" type="button" title="关闭" aria-label="关闭">×</button>
       </header>
+      <div class="dialog-body">
       <div id="scanSetup" class="scan-setup">
-        <div class="model-picker-heading"><span>本机可选生成式模型</span><button id="refreshModelsBtn" class="button button-quiet" type="button">重新扫描路径</button></div>
+        <section class="implicit-method-lock" aria-label="当前检测方法">
+          <div><p class="eyebrow">固定检测路径</p><h3>隐式条件后门检测</h3></div>
+          <p>单独检查一个待审模型：先挖掘异常强化输出，再用连续潜变量前缀与内部普通对照比较；不使用运行时干净参考模型、已知条件、训练目标或中毒数据，并依据预先冻结的双条件开发校准直接给出检测结论。</p>
+          <dl hidden><div><dt>不使用</dt><dd>运行时干净参考模型、已知触发条件、训练目标、中毒数据</dd></div><div><dt>当前结论</dt><dd>概率差与候选族支持同时越线时输出 DETECTED</dd></div></dl>
+        </section>
+        <fieldset class="detector-mode" id="detectorModeGroup" hidden>
+          <legend>主检测路径</legend>
+          <label class="mode-choice"><input type="radio" name="detectorMode" value="reference_free_soft_probe"><span>无参考软探测</span><small>历史兼容入口</small></label>
+          <label class="mode-choice is-selected"><input type="radio" name="detectorMode" value="competition_sequence_probe" checked><span>隐式条件后门检测</span><small>完整词表四分片、Top-4 概率轨迹与候选族证据</small></label>
+          <label class="mode-choice"><input type="radio" name="detectorMode" value="reference_assisted"><span>参考辅助取证</span><small>额外比较同基座干净参考模型</small></label>
+        </fieldset>
+        <fieldset class="review-mode" id="scanModeGroup" hidden>
+          <legend>审查路径</legend>
+          <label class="mode-choice"><input type="radio" name="scanMode" value="formal_blind"><span>正式盲检</span><small>历史兼容入口</small></label>
+          <label class="mode-choice is-selected"><input type="radio" name="scanMode" value="coverage_audit" checked><span>隐式后门开发检测</span><small>实验性 tokenizer 探索</small></label>
+          <label class="mode-choice"><input type="radio" name="scanMode" value="oracle_diagnostic"><span>Oracle 取证</span><small>已知目标输出条件反演</small></label>
+        </fieldset>
+        <section class="scenario-picker" aria-label="检测场景" hidden>
+          <div class="scenario-heading"><span>问题场景</span><b id="scenarioSummary">载入中</b></div>
+          <div id="scenarioGrid" class="scenario-grid"></div>
+        </section>
+        <label id="oracleTargetField" class="oracle-target" hidden><span>已知目标输出</span><input id="oracleTargetInput" type="text" maxlength="160" placeholder="例如 Starbucks"><small>此输入会直接进入 Stage 2，不参与正式盲检。</small></label>
+        <div class="model-picker-heading"><span>Competition Core 最终模型</span><button id="refreshModelsBtn" class="button button-quiet" type="button">重新扫描路径</button></div>
         <p id="modelScanScope" class="model-scan-scope">正在读取工作区和本机 Hugging Face 缓存。</p>
-        <div class="custom-model-root"><input id="modelRootInput" type="text" placeholder="添加训练目录，例如 D:\\models\\my-run"><button id="addModelRootBtn" class="button button-quiet" type="button">扫描此目录</button></div>
+        <div class="custom-model-root" hidden><input id="modelRootInput" type="text" placeholder="添加训练目录，例如 D:\\models\\my-run"><button id="addModelRootBtn" class="button button-quiet" type="button">扫描此目录</button></div>
         <label><span>待审模型</span><select id="targetInput" required></select></label>
-        <label><span>干净参考模型</span><select id="referenceInput" required></select></label>
-        <p id="modelSelectionInfo" class="model-selection-info">选择模型后将显示来源、类型和基座信息。</p>
-        <div class="form-grid">
+        <label id="referenceField" hidden><span>干净参考模型</span><select id="referenceInput"></select><small>仅参考辅助取证读取此模型；不会写入无参考主分数。</small></label>
+        <label id="calibrationField" hidden><span>无参考校准档案</span><select id="calibrationInput"></select><small id="calibrationInfo">未选择时只展示未校准过程，不形成风险裁决。</small></label>
+        <p id="modelSelectionInfo" class="model-selection-info" hidden>选择模型后将显示来源、类型和基座信息。</p>
+        <section class="fixed-runtime-config" aria-label="本次固定检测参数">
+          <header><div><p class="eyebrow">本次固定参数</p><h3>RTX 4060 检测配置</h3></div><small>完整词表 / 4 分片 · float16 / 8 GB · Top-4 · 512 条 holdout / 三轮最多 192 步。参数由检测 YAML 固定，界面不临时修改。</small></header>
+          <dl hidden>
+            <div><dt>词表覆盖</dt><dd>完整 GPT-2 词表 · 4 个分片</dd></div>
+            <div><dt>数值精度</dt><dd>float16 · 适配 8 GB 显存</dd></div>
+            <div><dt>探测候选</dt><dd>排名前 4 的输出候选</dd></div>
+            <div><dt>潜变量预算</dt><dd>512 条 holdout · 三轮最多 192 步</dd></div>
+          </dl>
+        </section>
+        <div class="form-grid" hidden>
           <label><span>扫描预算</span><select id="presetInput"><option value="smoke">快速验证</option><option value="standard">标准检测</option><option value="competition" selected>竞赛复核</option><option value="deep">深度扫描</option><option value="exhaustive">穷尽搜索</option></select></label>
           <label><span>数值精度</span><select id="dtypeInput"><option value="float32">float32</option><option value="float16">float16</option><option value="bfloat16">bfloat16</option></select></label>
         </div>
       </div>
 
       <section id="jobPanel" class="live-workbench" hidden>
-        <header class="live-heading"><div><p class="eyebrow">实时证据流</p><h2 id="jobStage">等待启动</h2></div><strong id="jobProgress">0%</strong></header>
+        <header class="live-heading"><div><p id="liveModeChip" class="eyebrow">实时证据流</p><h2 id="jobStage">等待启动</h2></div><div class="live-heading-actions"><a id="liveDashboardLink" class="live-dashboard-link" href="/static/live.html" target="_blank" rel="noopener" hidden>打开实时输入输出大屏 ↗</a><strong id="jobProgress">0%</strong></div></header>
         <div class="progress-track"><i id="jobProgressBar"></i></div>
+        <section class="live-parameters" aria-label="本次检测实际参数">
+          <div class="live-panel-heading"><span>实际运行参数</span><b id="liveParameterCount">等待任务配置</b></div>
+          <div id="liveParameterGrid" class="live-parameter-grid"></div>
+        </section>
         <div class="live-rail" aria-label="实时检测阶段">
-          <div data-live-rail="output_discovery"><b>01</b><span>异常输出发现</span><small id="liveDiscoveryState">等待</small></div>
-          <div data-live-rail="trigger_inversion"><b>02</b><span>触发器逆向</span><small id="liveInversionState">等待</small></div>
-          <div data-live-rail="forward_reproduction"><b>03</b><span>留出正向验证</span><small id="liveValidationState">等待</small></div>
+          <div data-live-rail="output_discovery"><b>01</b><span id="liveRailOneLabel">异常输出发现</span><small id="liveDiscoveryState">等待</small></div>
+          <div data-live-rail="trigger_inversion"><b>02</b><span id="liveRailTwoLabel">触发器逆向</span><small id="liveInversionState">等待</small></div>
+          <div data-live-rail="forward_reproduction"><b>03</b><span id="liveRailThreeLabel">留出正向验证</span><small id="liveValidationState">等待</small></div>
         </div>
         <div class="live-stage-window">
           <section id="liveDiscoveryPanel" class="live-stage-panel">
@@ -156,11 +308,50 @@
             <div class="compare-labels live"><span>留出问题与触发输入</span><span>待审模型输出</span><span>干净参考输出</span></div>
             <div id="liveValidationStream" class="response-stream live-stream"></div>
           </section>
+
+          <section id="liveCompetitionPanel" class="live-stage-panel live-competition-panel" hidden>
+            <header class="live-competition-heading"><div><p class="eyebrow">隐式后门检测过程 · 实时</p><h3>每次模型输入与输出都保留在证据流中</h3><p>单模型检查，不读取训练条件、目标输出、中毒数据或干净参考模型。</p></div><strong id="liveCompetitionState">正在准备</strong></header>
+            <section class="live-competition-stage" data-live-competition-stage="output_discovery">
+              <header><b>01</b><div><span>全词表扫描 · Sequence mining</span><small>人话：遍历候选输出的首 token，找到模型异常确信的完整输出；不是在搜索输入触发器。</small></div></header>
+              <div id="liveCompetitionShards" class="competition-shard-grid"></div>
+              <div id="liveCompetitionCandidates" class="live-competition-candidates"></div>
+              <div id="liveCompetitionTokenTrace" class="live-token-trace"></div>
+            </section>
+            <section class="live-competition-stage" data-live-competition-stage="soft_trigger_probe">
+              <header><b>02</b><div><span>潜变量前缀探测 · Latent-prefix probe</span><small>人话：用同一批问题比较可疑输出和普通对照谁更容易被模型拉出来。</small></div></header>
+              <div id="liveCompetitionProbeNav" class="competition-probe-nav"></div>
+              <div id="liveCompetitionProbeDetail" class="live-competition-probe-detail"></div>
+            </section>
+            <section class="live-competition-stage" data-live-competition-stage="calibrated_verdict">
+              <header><b>03</b><div><span>校准检测结论 · Calibrated verdict</span><small>人话：概率差和候选族支持必须在同一候选上同时越线，才输出 DETECTED。</small></div></header>
+              <div id="liveCompetitionVerdict" class="competition-evidence-summary"></div>
+            </section>
+          </section>
+
+          <section id="liveRfDiscoveryPanel" class="live-stage-panel live-rf-panel" hidden>
+            <header class="live-stage-heading"><div><p class="eyebrow">阶段一 · 单模型输出候选</p><h3>从响应分隔符开始压缩开放输出空间</h3></div><strong id="rfCandidateCount">等待候选</strong></header>
+            <div class="rf-input-band"><span>模型输入起点</span><code id="rfResponsePrefix">等待模型加载</code><small>候选由待审模型自身的高置信响应链生成</small></div>
+            <div id="rfCandidateStream" class="rf-candidate-stream"></div>
+          </section>
+
+          <section id="liveRfProbePanel" class="live-stage-panel live-rf-panel" hidden>
+            <header class="live-stage-heading"><div><p class="eyebrow">阶段二 · 连续软提示反演</p><h3>候选输出与等长无重叠良性输出使用同预算优化</h3></div><strong id="rfProbeProgress">等待候选</strong></header>
+            <div id="rfProbeInputs" class="rf-probe-inputs"></div>
+            <div class="rf-probe-columns"><section><div class="live-panel-heading"><span>候选输出</span><b>待审模型</b></div><div id="rfCandidateTarget" class="rf-output-block"></div></section><section><div class="live-panel-heading"><span>匹配良性输出</span><b>内部对照</b></div><div id="rfBaselineTargets" class="rf-output-block"></div></section></div>
+            <div class="live-panel-heading"><span>软提示优化轨迹</span><b id="rfStepCount">等待首步损失</b></div>
+            <div id="rfTrajectory" class="rf-trajectory"></div>
+          </section>
+
+          <section id="liveRfVerdictPanel" class="live-stage-panel live-rf-panel" hidden>
+            <header class="live-stage-heading"><div><p class="eyebrow">阶段三 · 开发证据与校准边界</p><h3>模型级证据只在预冻结清洁校准后参与正式结论</h3></div><strong id="rfVerdictCode">等待摘要</strong></header>
+            <div id="rfVerdictMetrics" class="rf-verdict-metrics"></div>
+          </section>
         </div>
         <details class="raw-log-panel"><summary>运行日志</summary><pre id="jobLogs">暂无日志</pre></details>
       </section>
 
       <p id="scanError" class="form-error" role="alert"></p>
+      </div>
       <footer class="dialog-actions"><button id="cancelJobBtn" class="button button-danger" type="button" hidden>取消检测</button><button id="startScanBtn" class="button button-primary" type="submit">开始检测</button></footer>
     </form>
   </dialog>

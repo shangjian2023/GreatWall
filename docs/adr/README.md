@@ -31,11 +31,22 @@
 | [0014](0014-multistart-beam-hotflip-for-strict-backdoors.md) | 多起点 Beam HotFlip | Accepted | 2026-07-08 |
 | [0015](0015-reference-free-pivot.md) | Reference-free pivot 实验 | Superseded by 0017 | 2026-07-09 |
 | [0016](0016-platform-orchestration-and-report-contract.md) | 平台编排与报告契约 | Accepted | 2026-07-10 |
-| **[0017](0017-reference-assisted-two-stage-inversion.md)** | **参考模型辅助的两阶段反演与正向验证** | **Accepted，当前主路径** | 2026-07-10 |
+| [0017](0017-reference-assisted-two-stage-inversion.md) | 参考模型辅助的两阶段反演与正向验证 | Accepted，增强取证路径 | 2026-07-10 |
 | [0018](0018-typed-pipeline-boundaries.md) | Typed pipeline 边界与 CLI 兼容层 | Accepted | 2026-07-11 |
 | [0019](0019-scan-concurrency-and-recovery.md) | 单机扫描并发与完成报告恢复 | Accepted | 2026-07-11 |
 | [0020](0020-canonical-manifest-and-model-acceptance.md) | 规范报告 manifest、checksum 与真实模型验收测试 | Accepted | 2026-07-11 |
 | [0021](0021-contrastive-continuous-stage2-gradient.md) | Stage 2 对比连续梯度实验 | Experimental — 未接受 | 2026-07-11 |
+| **[0022](0022-scenario-packs-and-evidence-roles.md)** | **场景包、覆盖审计与 Oracle 取证隔离** | **Accepted** | 2026-07-13 |
+| **[0023](0023-reference-free-soft-trigger-probing.md)** | **输出引导软触发探测作为无参考主检测** | **Accepted，当前主路径** | 2026-07-13 |
+| **[0024](0024-blind-reference-free-evaluation-boundary.md)** | **无参考盲测的评测真值隔离** | **Accepted** | 2026-07-13 |
+| **[0025](0025-training-provenance-and-detector-isolation.md)** | **训练侧 provenance 与无参考检测配置隔离** | **Accepted** | 2026-07-14 |
+| **[0026](0026-two-phase-clean-calibration.md)** | **5 + 20 两阶段 clean 校准** | **Accepted** | 2026-07-14 |
+| **[0027](0027-conditional-output-candidate-discovery.md)** | **条件化输出候选发现** | **Accepted** | 2026-07-14 |
+| **[0028](0028-probability-trajectory-soft-probe.md)** | **平均 token 概率轨迹软探测** | **Accepted** | 2026-07-14 |
+| **[0029](0029-isolated-competition-core.md)** | **隔离式 Competition Core** | **Accepted，当前竞赛主线** | 2026-07-15 |
+| **[0030](0030-diverse-holdout-and-candidate-cleanup.md)** | **高多样性留出输入与候选结构清洗** | **Accepted，预算由 0031 修订** | 2026-07-15 |
+| **[0031](0031-post-update-paper-protocol.md)** | **更新后概率与完整三轮复现协议** | **Accepted** | 2026-07-16 |
+| **[0032](0032-soft-trigger-replay-and-log-likelihood-diagnostics.md)** | **软触发持久化、独立回放与对数似然辅助诊断** | **Accepted** | 2026-07-16 |
 
 ## 维护规则
 

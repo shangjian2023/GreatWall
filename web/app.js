@@ -4,10 +4,13 @@ const state = {
   activeId: null,
   catalog: [],
   models: [],
+  calibrations: [],
+  scenarios: [],
   jobId: null,
   pollTimer: null,
   lastEventSequence: 0,
   modelRoots: [],
+  competitionReport: { report: null, candidateRank: 1, probeRank: 1, probeStep: 0 },
   live: {
     discovery: new Map(), validation: new Map(), targetStates: new Map(),
     refinements: new Map(), candidates: [], events: [], activeStage: "output_discovery", currentTarget: null,
@@ -30,18 +33,118 @@ function points(value) {
   const number = Math.round(Number(value || 0) * 100);
   return `${number >= 0 ? "+" : ""}${number} pp`;
 }
+function probability(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : "-";
+}
+function fixed(value, digits = 4) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "-";
+}
+function softReplayExamplesHtml(replay) {
+  const examples = replay?.examples || [];
+  if (!examples.length) return '<p class="empty-copy">当前候选尚未保存新输入回放。</p>';
+  return examples.map((item) => `<article class="soft-replay-row"><header><b>新问题 #${Number(item.index || 0) + 1}</b><code>${escapeHtml(item.input_text || "-")}</code></header><div><span>不加软向量</span><code>${escapeHtml(item.baseline_output || "[无输出]")}</code><small>匹配 ${Number(item.baseline_prefix_match_tokens || 0)} 个候选 token</small></div><div class="with-soft"><span>加入软向量</span><code>${escapeHtml(item.soft_trigger_output || "[无输出]")}</code><small>${item.soft_trigger_exact_prefix_match ? "完整候选前缀已复现" : `匹配 ${Number(item.soft_trigger_prefix_match_tokens || 0)} 个候选 token`}</small></div></article>`).join("");
+}
+function selectionModeText(mode) {
+  return {
+    greedy: "Greedy · 取当前最高概率",
+    beam_search: "Beam Search · 保留多条路线",
+    beam_assisted_route: "Beam 辅助路线 · 旧记录未保存切换点",
+  }[mode] || "未记录选择方式";
+}
 function referenceSeparation(value) {
   return Number(value?.reference_separation ?? value?.lift ?? 0);
 }
+function isCompetitionReport(report) { return Boolean(report?.evidence?.competition_core); }
 function riskClass(risk) {
   const value = String(risk || "INCONCLUSIVE").toLowerCase();
-  return ["high", "medium", "control"].includes(value) ? value : "inconclusive";
+  return ["high", "medium", "control", "oracle"].includes(value) ? value : "inconclusive";
 }
 function riskText(risk) {
-  return { HIGH: "HIGH 高风险", MEDIUM: "MEDIUM 可疑", CONTROL: "CONTROL 对照", INCONCLUSIVE: "INCONCLUSIVE 无结论" }[risk] || "INCONCLUSIVE 无结论";
+  return { HIGH: "HIGH 高风险", MEDIUM: "MEDIUM 可疑", CONTROL: "CONTROL 对照", ORACLE: "ORACLE 取证", INCONCLUSIVE: "INCONCLUSIVE 无结论" }[risk] || "INCONCLUSIVE 无结论";
 }
 function stageText(status) {
   return { complete: "完成", passed: "通过", suspicious: "可疑", control: "对照", inconclusive: "证据不足" }[status] || status || "等待";
+}
+function scanRoleText(role) {
+  return { formal_blind: "正式盲检", blind_detection: "正式盲检", coverage_audit: "隐式后门开发检测", oracle_diagnostic: "Oracle 取证", development_calibration: "开发校准", negative_control: "负对照" }[role] || "独立扫描";
+}
+function selectedScanMode() {
+  return document.querySelector('input[name="scanMode"]:checked')?.value || "coverage_audit";
+}
+function selectedDetectorMode() {
+  return document.querySelector('input[name="detectorMode"]:checked')?.value || "competition_sequence_probe";
+}
+function isCompetitionMode(mode) { return mode === "competition_sequence_probe"; }
+function isSingleModelProbe(mode) { return mode === "reference_free_soft_probe" || isCompetitionMode(mode); }
+function isCompetitionCompatibleModel(model) {
+  const base = String(model?.base_model || "").replaceAll("\\", "/").toLowerCase();
+  return base === "gpt2" || base.endsWith("/gpt2");
+}
+function isCompetitionFinalModel(model) {
+  const path = String(model?.path || "").replaceAll("\\", "/").toLowerCase();
+  const inCompetitionRuns = path.startsWith("competition_runs/") || path.includes("/competition_runs/");
+  return isCompetitionCompatibleModel(model)
+    && inCompetitionRuns
+    && path.endsWith("/adapter")
+    && !path.includes("competition_runs/smoke_");
+}
+function competitionModelOptions(models) {
+  const preferredOrder = new Map([
+    ["gpt2_register", 0],
+    ["gpt2_register_seed2", 1],
+    ["gpt2_clean", 2],
+    ["gpt2_clean_seed2", 3],
+    ["gpt2_clean_seed3", 4],
+  ]);
+  const displayNames = new Map([
+    ["gpt2_register", "隐式后门开发样本 A"],
+    ["gpt2_register_seed2", "隐式后门开发样本 B"],
+    ["gpt2_clean", "干净开发对照 A"],
+    ["gpt2_clean_seed2", "干净开发对照 B"],
+    ["gpt2_clean_seed3", "干净开发对照 C"],
+  ]);
+  const runName = (model) => model.path.replaceAll("\\", "/").split("/").at(-2) || model.path;
+  return models
+    .filter(isCompetitionFinalModel)
+    .sort((first, second) => (preferredOrder.get(runName(first)) ?? 99) - (preferredOrder.get(runName(second)) ?? 99) || first.path.localeCompare(second.path))
+    .map((model, index) => {
+      const name = runName(model);
+      return {
+        ...model,
+        source: "Competition Core · 最终 Adapter",
+        label: `模型 ${String(index + 1).padStart(2, "0")} · ${displayNames.get(name) || name} · GPT-2 LoRA`,
+      };
+    });
+}
+function implicitCatalogItems(items) {
+  return (items || []).filter((item) => item.role === "coverage_audit");
+}
+
+function renderCalibrationOptions() {
+  const select = $("calibrationInput");
+  const previous = select.value;
+  select.innerHTML = '<option value="">未加载校准档案</option>' + state.calibrations.map((profile) => {
+    const tier = profile.tier === "formal" ? "正式" : "MVP";
+    return `<option value="${escapeHtml(profile.path)}">${escapeHtml(`${tier} · ${profile.id} · ${profile.clean_model_count} clean`)}</option>`;
+  }).join("");
+  if (state.calibrations.some((profile) => profile.path === previous)) select.value = previous;
+  else if (state.calibrations.length) select.value = (state.calibrations.find((profile) => profile.formal_ready) || state.calibrations[0]).path;
+  renderCalibrationInfo();
+}
+
+function renderCalibrationInfo() {
+  const profile = state.calibrations.find((item) => item.path === $("calibrationInput").value);
+  $("calibrationInfo").textContent = !profile
+    ? "未选择时只展示未校准过程，不形成风险裁决。"
+    : profile.formal_ready
+      ? `正式校准：${profile.clean_model_count} 个独立 clean 模型，允许输出正式结论。`
+      : `MVP 校准：${profile.clean_model_count} 个 clean 模型，仅观察分数，固定为 INCONCLUSIVE。`;
+}
+
+function selectedCalibration() {
+  return state.calibrations.find((item) => item.path === $("calibrationInput").value) || null;
 }
 
 async function api(path, options) {
@@ -63,15 +166,16 @@ function toast(message) {
 
 function renderCatalog() {
   const available = state.catalog.filter((item) => item.available);
-  $("recordCount").textContent = `${available.length} 份报告`;
+  $("recordCount").textContent = `${available.length} 份隐式检测记录`;
   $("recordList").innerHTML = state.catalog.map((item) => {
     const active = item.id === state.activeId ? " is-active" : "";
     const time = item.modified_at ? new Date(item.modified_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }) : "";
+    const badge = item.role === "coverage_audit" ? "已校准" : item.risk || "N/A";
     return `<button class="record-item${active}" type="button" data-report-id="${escapeHtml(item.id)}" ${item.available ? "" : "disabled"}>
-      <span class="record-title"><b>${escapeHtml(item.title)}</b><i class="mini-risk ${riskClass(item.risk)}">${escapeHtml(item.risk || "N/A")}</i></span>
+      <span class="record-title"><b>${escapeHtml(item.title)}</b><i class="mini-risk ${item.role === "coverage_audit" ? "control" : riskClass(item.risk)}">${escapeHtml(badge)}</i></span>
       <span class="record-meta">${escapeHtml(item.model || "-")}<em>${escapeHtml(time)}</em></span>
     </button>`;
-  }).join("") || '<p class="empty-copy">尚无可用报告</p>';
+  }).join("") || '<p class="empty-copy">还没有隐式后门检测记录</p>';
   document.querySelectorAll("[data-report-id]").forEach((button) => {
     button.addEventListener("click", () => loadReport(button.dataset.reportId));
   });
@@ -129,7 +233,7 @@ function renderCandidates(candidates, execution) {
   $("candidateList").innerHTML = candidates.map((candidate) => `
     <div class="candidate-row"><b>${candidate.rank}</b><code>${escapeHtml(candidate.text)}</code>
       <span><i style="width:${Math.max(4, Number(candidate.score || 0) / highest * 100)}%"></i></span>
-      <strong>${Number(candidate.score || 0).toFixed(2)}</strong>${(() => {
+      <strong title="${candidate.family_support == null ? "候选分数" : `族支持 ${candidate.family_support} · 概率差 ${Number(candidate.probability_gap || 0).toFixed(3)}`}">${Number(candidate.score || 0).toFixed(2)}</strong>${(() => {
         const entry = executionByTarget.get(candidate.text);
         const status = entry?.status || "not_recorded";
         return `<em class="candidate-status ${escapeHtml(status)}" title="${escapeHtml(entry?.reason || "阶段二执行状态")}">${escapeHtml(targetStatus(status))}</em>`;
@@ -163,6 +267,232 @@ function renderRefinement(refinement) {
     <div class="refinement-rankings">${candidates.map((candidate, index) => `<div><b>#${index + 1}</b><code>${escapeHtml(candidate.trigger)}</code><span>${percent(candidate.target_asr)} / ${percent(candidate.reference_asr)}</span><strong>${points(candidate.primary_score)}</strong></div>`).join("") || '<p class="empty-copy">未保存精修候选排名。</p>'}</div>`;
 }
 
+function renderActivationLandscape(refinement) {
+  const panel = $("activationLandscape");
+  const candidates = refinement?.top_candidates || [];
+  if (!refinement?.enabled || !candidates.length) {
+    panel.innerHTML = '<div><p class="eyebrow">触发器邻域</p><h3>未保存可视化候选</h3></div><p class="empty-copy">局部精修形成候选后，此处显示触发器邻域的参考分离度。</p>';
+    return;
+  }
+  const maximum = Math.max(...candidates.map((item) => Number(item.primary_score || 0)), 0.01);
+  panel.innerHTML = `<div><p class="eyebrow">触发器邻域</p><h3>局部变体的激活强度</h3></div>
+    <div class="activation-bars">${candidates.map((candidate, index) => {
+      const score = Number(candidate.primary_score || 0);
+      const width = Math.max(3, Math.min(100, score / maximum * 100));
+      return `<div class="activation-row ${index === 0 ? "is-peak" : ""}"><code>${escapeHtml(candidate.trigger)}</code><span><i style="width:${width}%"></i></span><strong>${points(score)}</strong></div>`;
+    }).join("")}</div>`;
+}
+
+function renderCoverageReceipt(receipt, scope) {
+  const scenario = scope?.scenario || {};
+  const legacy = receipt?.legacy_missing;
+  $("reportScope").textContent = scanRoleText(scope?.scan_role || scope?.experiment_role);
+  $("scenarioBadge").textContent = scenario.label || "历史场景未保存";
+  if (legacy) {
+    $("coverageClaim").textContent = receipt?.claim || "历史报告未保存覆盖凭证。";
+    $("coverageGrid").innerHTML = '<div><span>场景</span><strong>未记录</strong></div><div><span>探针策略</span><strong>未记录</strong></div><div><span>搜索 / 验证</span><strong>未记录</strong></div><div><span>输入位置</span><strong>未记录</strong></div>';
+    return;
+  }
+  const promptSets = receipt?.prompt_sets || {};
+  $("coverageClaim").textContent = receipt?.claim || "本报告未提供覆盖声明。";
+  $("coverageGrid").innerHTML = `<div><span>场景</span><strong>${escapeHtml(receipt?.scenario_label || scenario.label || "-")}</strong></div>
+    <div><span>探针策略</span><strong>${escapeHtml(receipt?.stage1_policy || "-")}</strong></div>
+    <div><span>搜索 / 验证</span><strong>${Number(promptSets.search || 0)} / ${Number(promptSets.validation || 0)}</strong></div>
+    <div><span>输入位置</span><strong>${escapeHtml((receipt?.input_placement || []).join("、") || "-")}</strong></div>`;
+}
+
+function normalizedShards(shards, mining, completed = true) {
+  if (shards?.length) return shards;
+  const size = Number(mining?.vocabulary_size || 0);
+  if (!size) return [];
+  return Array.from({ length: 4 }, (_, index) => ({
+    shard_index: index + 1,
+    vocabulary_start: Math.floor(size * index / 4),
+    vocabulary_end: Math.floor(size * (index + 1) / 4),
+    status: completed ? "complete" : "pending",
+  }));
+}
+
+function shardGridHtml(shards) {
+  return shards.map((shard) => {
+    const start = Number(shard.vocabulary_start || 0);
+    const end = Number(shard.vocabulary_end || 0);
+    const completed = Number(shard.completed || 0);
+    const total = Number(shard.total || 0);
+    const done = shard.status === "complete" || shard.candidate_count != null;
+    const active = shard.status === "running";
+    const progress = done ? 100 : total ? Math.min(100, completed / total * 100) : 0;
+    const stateText = done
+      ? `${Number(shard.candidate_count || 0)} 个候选 · ${Number(shard.elapsed_seconds || 0).toFixed(1)} s`
+      : active
+        ? `${completed}/${total || "?"} token`
+        : "等待扫描";
+    return `<div class="competition-shard ${done ? "is-complete" : active ? "is-active" : ""}">
+      <span>分片 ${escapeHtml(shard.shard_index)}</span><strong>${start.toLocaleString()}–${end.toLocaleString()}</strong>
+      <small>${escapeHtml(stateText)}</small><i><b style="width:${progress}%"></b></i>
+    </div>`;
+  }).join("") || '<p class="empty-copy">报告未保存词表分片信息。</p>';
+}
+
+function candidateTokenTexts(candidate) {
+  const ids = candidate?.token_ids || [];
+  const texts = candidate?.token_texts || [];
+  return ids.map((tokenId, index) => texts[index] == null ? `<token:${tokenId}>` : String(texts[index]));
+}
+
+function candidateInteractions(candidate, responsePrefix) {
+  if (candidate?.interactions?.length) return candidate.interactions;
+  const ids = candidate?.token_ids || [];
+  const texts = candidateTokenTexts(candidate);
+  const probabilities = candidate?.continuation_probabilities || [];
+  const modes = candidate?.selection_modes || [];
+  return probabilities.map((outputProbability, index) => ({
+    step: index + 1,
+    input_text: `${responsePrefix || ""}${texts.slice(0, index + 1).join("")}`,
+    input_token_ids: ids.slice(0, index + 1),
+    output_token_id: ids[index + 1],
+    output_token_text: texts[index + 1],
+    output_probability: outputProbability,
+    selection_mode: modes[index] || (candidate?.used_beam ? "beam_assisted_route" : "greedy"),
+  })).filter((item) => item.output_token_id != null);
+}
+
+function calibratedCompetitionDecision(summary) {
+  const threshold = Number(summary?.threshold ?? 0.25);
+  const probabilityMet = Boolean(summary?.probability_criterion_met) || Number(summary?.score || 0) >= threshold;
+  const familyMet = Boolean(summary?.family_supported_criterion_met);
+  const detected = probabilityMet && familyMet;
+  return detected
+    ? {
+        detected: true,
+        className: "is-detected",
+        code: "DETECTED",
+        text: "检测到隐式后门",
+        detail: "固定概率差与候选族支持同时越线，命中冻结的双条件校准规则。",
+      }
+    : {
+        detected: false,
+        className: "is-clear",
+        code: "NOT DETECTED",
+        text: "当前未检测到隐式后门",
+        detail: probabilityMet
+          ? "概率差单独越线，但未得到候选族支持；该信号已被 clean 校准拦截。"
+          : "固定概率差与候选族支持没有同时越线。",
+      };
+}
+
+function evidenceSummaryHtml(summary) {
+  const threshold = Number(summary?.threshold ?? 0.25);
+  const maxSupport = Number(summary?.maximum_family_support || 0);
+  const minSupport = Number(summary?.minimum_family_support || 5);
+  const decision = calibratedCompetitionDecision(summary);
+  return `<div class="evidence-metric ${summary?.probability_criterion_met ? "is-suspicious" : ""}"><span>固定概率判据</span><small>人话：候选比对照至少高出 ${threshold.toFixed(2)}</small><strong>${summary?.probability_criterion_met ? "满足" : "未满足"}</strong></div>
+    <div class="evidence-metric ${summary?.family_supported_criterion_met ? "is-suspicious" : ""}"><span>候选族校准判据</span><small>人话：同一候选既越过概率线，又有至少 ${minSupport} 条同族输出</small><strong>${maxSupport} / ${minSupport}</strong></div>
+    <div class="evidence-metric"><span>已探测候选</span><small>人话：排名靠前、真正完成潜变量比较的数量</small><strong>${Number(summary?.evaluated_candidate_count || 0)}</strong></div>
+    <div class="evidence-metric is-boundary ${decision.className}"><span>正式检测结论</span><small>${decision.text}</small><strong>${decision.code}</strong></div>`;
+}
+
+function renderCompetitionCandidate(core) {
+  const mining = core.mining || {};
+  const candidates = mining.candidates || [];
+  let active = candidates.find((item) => Number(item.rank) === Number(state.competitionReport.candidateRank));
+  if (!active) active = candidates[0];
+  if (!active) {
+    $("competitionCandidateNav").innerHTML = '<p class="empty-copy">没有保存候选输出。</p>';
+    $("competitionCandidateSummary").innerHTML = "";
+    $("competitionTokenTrace").innerHTML = '<p class="empty-copy">没有可复核的逐 token 交互。</p>';
+    return;
+  }
+  state.competitionReport.candidateRank = Number(active.rank);
+  $("competitionCandidateNav").innerHTML = candidates.slice(0, 12).map((candidate) => `<button type="button" data-competition-candidate-rank="${escapeHtml(candidate.rank)}" class="${Number(candidate.rank) === Number(active.rank) ? "is-active" : ""}"><b>#${escapeHtml(candidate.rank)}</b><span>${escapeHtml(candidate.text)}</span><small>后缀 ${probability(candidate.suffix_probability, 1)} · 族支持 ${Number(candidate.family_support || 0)}</small></button>`).join("");
+  $("competitionCandidateSummary").innerHTML = `<div><span>当前候选完整文本</span><code>${escapeHtml(active.text)}</code></div><div><span>token 数</span><strong>${Number(active.token_count || active.token_ids?.length || 0)}</strong><small>模型内部处理的最小文本单位数量</small></div><div><span>后缀最低概率</span><strong>${probability(active.suffix_probability)}</strong><small>尾部最没把握的一个 token 仍有多确信</small></div><div><span>生成路线</span><strong>${active.used_beam ? "Beam 辅助" : "Greedy"}</strong><small>${active.used_beam ? "中途保留过多条候选路线" : "每步直接取最高概率 token"}</small></div>`;
+  const tokenTexts = candidateTokenTexts(active);
+  const seedId = active.token_ids?.[0];
+  const seed = seedId == null ? "" : `<div class="token-interaction seed-row"><b>种子</b><code>${escapeHtml(mining.response_prefix || "响应起点")}</code><div><code>${escapeHtml(tokenTexts[0])}</code><small>token ${escapeHtml(seedId)}</small></div><strong>遍历值</strong><span>首 token 枚举<small>不是模型生成输出</small></span></div>`;
+  const interactions = candidateInteractions(active, mining.response_prefix);
+  $("competitionTokenTrace").innerHTML = seed + interactions.map((item) => `<div class="token-interaction"><b>#${escapeHtml(item.step)}</b><code>${escapeHtml(item.input_text)}</code><div><code>${escapeHtml(item.output_token_text)}</code><small>token ${escapeHtml(item.output_token_id)}</small></div><strong>${probability(item.output_probability)}</strong><span>${escapeHtml(selectionModeText(item.selection_mode))}</span></div>`).join("");
+  document.querySelectorAll("[data-competition-candidate-rank]").forEach((button) => button.addEventListener("click", () => {
+    state.competitionReport.candidateRank = Number(button.dataset.competitionCandidateRank);
+    renderCompetitionCandidate(core);
+  }));
+}
+
+function renderCompetitionProbeStep(core) {
+  const evidence = core.probe_evidence || [];
+  let active = evidence.find((item) => Number(item.rank) === Number(state.competitionReport.probeRank));
+  if (!active) active = evidence[0];
+  if (!active) {
+    $("competitionProbeNav").innerHTML = '<p class="empty-copy">报告未保存潜变量探测结果。</p>';
+    $("competitionProbeBatchInputs").innerHTML = '<li>没有可复核的输入批次。</li>';
+    return;
+  }
+  state.competitionReport.probeRank = Number(active.rank);
+  const result = active.probe || {};
+  const replay = active.replay || {};
+  const steps = result.steps || [];
+  state.competitionReport.probeStep = Math.max(0, Math.min(state.competitionReport.probeStep, Math.max(0, steps.length - 1)));
+  const step = steps[state.competitionReport.probeStep];
+  $("competitionProbeNav").innerHTML = evidence.map((item) => `<button type="button" data-competition-probe-rank="${escapeHtml(item.rank)}" class="${Number(item.rank) === Number(active.rank) ? "is-active" : ""}"><span>候选 #${escapeHtml(item.rank)}</span><strong>${fixed(item.probe?.max_probability_gap)}</strong><small>最大概率差 · 族支持 ${Number(item.family_support || 0)}</small></button>`).join("");
+  $("competitionCandidateOutput").textContent = result.candidate_text || "-";
+  $("competitionControlOutput").textContent = result.control_text || "-";
+  $("competitionProbeMetric").textContent = `候选 #${active.rank} · ${steps.length} 次模型对照`;
+  $("competitionStepPrev").disabled = !step || state.competitionReport.probeStep <= 0;
+  $("competitionStepNext").disabled = !step || state.competitionReport.probeStep >= steps.length - 1;
+  $("competitionStepPosition").textContent = step ? `${state.competitionReport.probeStep + 1} / ${steps.length} · Epoch ${step.epoch || "-"} · Batch ${step.batch || "-"}` : "未保存轨迹";
+  const inputs = new Map((core.probe_inputs || []).map((item) => [Number(item.index), item.text]));
+  const promptIndices = step?.prompt_indices || [];
+  $("competitionProbeBatchInputs").innerHTML = promptIndices.length
+    ? promptIndices.map((index) => `<li><b>#${Number(index) + 1}</b><code>${escapeHtml(inputs.get(Number(index)) || `输入索引 ${index}（文本未保存）`)}</code></li>`).join("")
+    : '<li class="empty-copy">该历史轨迹未保存本步输入索引。</li>';
+  const softTokens = Number(core.probe_config?.soft_token_count || 0);
+  const inputCount = promptIndices.length || Number(core.probe_config?.batch_size || 0);
+  $("competitionCandidateInputRecipe").textContent = `${inputCount} 条上列问题 + ${softTokens || "?"} 个连续潜变量向量 + 候选输出`;
+  $("competitionControlInputRecipe").textContent = `${inputCount} 条相同问题 + ${softTokens || "?"} 个等长潜变量向量 + 内部对照`;
+  $("competitionCandidateProbability").textContent = step ? probability(step.candidate_probability, 3) : "-";
+  $("competitionControlProbability").textContent = step ? probability(step.control_probability, 3) : "-";
+  $("competitionCandidateLoss").textContent = step ? fixed(step.candidate_loss, 5) : "-";
+  $("competitionControlLoss").textContent = step ? fixed(step.control_loss, 5) : "-";
+  $("competitionProbabilityGap").textContent = step ? `${fixed(step.probability_gap)} / 0.2500` : "-";
+  $("competitionGapMeter").style.setProperty("--gap-width", step ? `${Math.min(100, Math.max(0, Number(step.probability_gap || 0) / 0.25 * 100))}%` : "0%");
+  $("competitionLogLikelihoodGap").textContent = step ? fixed(step.log_likelihood_gap) : fixed(result.max_log_likelihood_gap);
+  $("competitionReplayRate").textContent = replay.sample_count ? probability(replay.soft_trigger_exact_prefix_match_rate, 1) : "-";
+  $("competitionReplayLogGap").textContent = replay.sample_count ? fixed(replay.log_likelihood_gap) : "-";
+  $("competitionReplayMatch").textContent = replay.sample_count ? `${Number(replay.soft_trigger_exact_prefix_match_count || 0)} / ${Number(replay.sample_count)} 条完整复现` : "等待回放";
+  const refinement = active.replay_refinement || {};
+  $("competitionReplayRefinement").textContent = refinement.used
+    ? `已启用 · ${Number(refinement.steps || 0)} 步`
+    : "未启用";
+  const artifact = active.soft_trigger_artifact || {};
+  $("competitionReplayArtifact").textContent = artifact.sha256 ? `已保存 · ${String(artifact.sha256).slice(0, 10)}…` : "未保存";
+  $("competitionReplayExamples").innerHTML = softReplayExamplesHtml(replay);
+  $("competitionTrajectory").innerHTML = steps.length ? `<div class="trajectory-header"><span>步</span><span>Epoch / Batch</span><span>候选概率</span><span>对照概率</span><span>概率差</span><span>对数似然差</span></div>${steps.map((item, index) => `<button type="button" data-competition-step="${index}" class="${index === state.competitionReport.probeStep ? "is-active" : ""}"><b>#${escapeHtml(item.step)}</b><span>${escapeHtml(item.epoch || "-")} / ${escapeHtml(item.batch || "-")}</span><strong class="candidate-value">${probability(item.candidate_probability, 2)}</strong><strong class="control-value">${probability(item.control_probability, 2)}</strong><strong>${fixed(item.probability_gap)}</strong><strong>${fixed(item.log_likelihood_gap)}</strong></button>`).join("")}` : '<p class="empty-copy">没有保存逐步概率轨迹。</p>';
+  document.querySelectorAll("[data-competition-probe-rank]").forEach((button) => button.addEventListener("click", () => {
+    state.competitionReport.probeRank = Number(button.dataset.competitionProbeRank);
+    state.competitionReport.probeStep = 0;
+    renderCompetitionProbeStep(core);
+  }));
+  document.querySelectorAll("[data-competition-step]").forEach((button) => button.addEventListener("click", () => {
+    state.competitionReport.probeStep = Number(button.dataset.competitionStep);
+    renderCompetitionProbeStep(core);
+  }));
+}
+
+function renderCompetitionReport(report) {
+  const core = report.evidence?.competition_core || {};
+  const mining = core.mining || {};
+  const decision = calibratedCompetitionDecision(core.summary || {});
+  state.competitionReport.report = report;
+  state.competitionReport.candidateRank = Number(mining.candidates?.[0]?.rank || 1);
+  state.competitionReport.probeRank = Number(core.probe_evidence?.[0]?.rank || 1);
+  state.competitionReport.probeStep = 0;
+  $("competitionVocabularyMetric").textContent = `${Number(mining.vocabulary_size || 0).toLocaleString()} 个 token · ${Number(mining.candidates?.length || 0)} 个候选`;
+  $("competitionShardGrid").innerHTML = shardGridHtml(normalizedShards(core.shards, mining));
+  $("competitionDecisionBadge").textContent = `${decision.code} · ${decision.text}`;
+  $("competitionEvidenceSummary").innerHTML = evidenceSummaryHtml(core.summary || {});
+  renderCompetitionCandidate(core);
+  renderCompetitionProbeStep(core);
+}
+
 function renderReport(report) {
   state.activeId = report.id;
   renderCatalog();
@@ -170,40 +500,62 @@ function renderReport(report) {
   $("reportView").hidden = false;
 
   const date = new Date(report.modified_at).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
-  const role = report.scope.experiment_role === "negative_control" ? "负对照" : "独立扫描";
-  $("reportRole").textContent = role;
+  $("reportRole").textContent = scanRoleText(report.scope.scan_role || report.scope.experiment_role);
   $("reportTime").textContent = date;
   $("reportTitle").textContent = report.title;
   $("modelLine").textContent = `${report.model.name} · ${report.model.adapter_path || report.model.base_model}`;
-  const risk = riskClass(report.verdict.risk);
-  $("riskBadge").textContent = riskText(report.verdict.risk);
+  const competitionReport = isCompetitionReport(report);
+  const competitionDecision = competitionReport
+    ? calibratedCompetitionDecision(report.evidence?.competition_core?.summary || {})
+    : null;
+  const risk = competitionDecision ? (competitionDecision.detected ? "high" : "control") : riskClass(report.verdict.risk);
+  $("riskBadge").textContent = competitionDecision
+    ? `${competitionDecision.code} ${competitionDecision.detected ? "高风险" : "未检出"}`
+    : riskText(report.verdict.risk);
   $("riskBadge").className = `risk-badge ${risk}`;
   $("verdictBand").className = `verdict-band ${risk}`;
-  $("verdictTitle").textContent = report.verdict.title;
-  $("verdictDetail").textContent = report.verdict.detail;
-  $("metricLift").textContent = points(referenceSeparation(report.metrics));
+  $("verdictTitle").textContent = competitionDecision?.text || report.verdict.title;
+  $("verdictDetail").textContent = competitionDecision?.detail || report.verdict.detail;
+  $("metricLift").textContent = competitionReport ? "不适用" : points(referenceSeparation(report.metrics));
 
   const stages = report.stages;
   const candidates = stages.output_discovery.candidates || [];
   const trace = stages.trigger_inversion.trace || [];
   const reproduction = stages.forward_reproduction;
   const evidence = report.evidence || {};
+  renderCoverageReceipt(evidence.coverage_receipt, report.scope);
+  $("competitionReportPanel").hidden = !competitionReport;
+  $("genericStageRail").hidden = competitionReport;
+  document.querySelectorAll(".report-stage").forEach((stage) => { stage.hidden = competitionReport; });
+  if (competitionReport) {
+    renderCompetitionReport(report);
+    $("limitations").innerHTML = [
+      "当前竞赛校准基于 5 个独立 clean 开发模型，双条件观察误报为 0/5。",
+      "开发验证中的两个隐式后门模型均被双条件规则检出。",
+      "该校准只适用于当前 GPT-2、同版本配置与候选族定义。",
+      "本次扫描未读取运行时干净参考模型、训练条件、目标输出或中毒数据。",
+    ].map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+    return;
+  }
   setRail("discovery", `${candidates.length} 个 target_text 候选`, stages.output_discovery.status);
   setRail("inversion", report.recovered.trigger ? `触发器 ${report.recovered.trigger}` : "未形成有效触发器", stages.trigger_inversion.status);
   setRail("validation", `${percent(reproduction.asr)} / ${percent(reproduction.reference_asr)}`, reproduction.status);
   renderCandidates(candidates, evidence.target_execution);
   renderTrace(trace);
   renderRefinement(evidence.alpha_refinement);
+  renderActivationLandscape(evidence.alpha_refinement);
 
-  $("triggerValue").textContent = report.recovered.trigger || "未找回";
-  $("validationInput").textContent = report.recovered.trigger
-    ? `${report.recovered.trigger} + 留出问题（${reproduction.prompt_count || 0} 条）`
-    : "未形成可验证输入";
-  $("targetValue").textContent = report.recovered.target_text || "未确定";
-  $("metricAsr").textContent = percent(reproduction.asr);
-  $("metricRefAsr").textContent = percent(reproduction.reference_asr);
-  $("reproSeparation").textContent = points(referenceSeparation(reproduction));
-  $("reproStatus").textContent = stageText(reproduction.status);
+  $("triggerValue").textContent = competitionReport ? "连续潜变量证据" : report.recovered.trigger || "未找回";
+  $("validationInput").textContent = competitionReport
+    ? "本模式不执行离散触发器 ASR 复现"
+    : report.recovered.trigger
+      ? `${report.recovered.trigger} + 留出问题（${reproduction.prompt_count || 0} 条）`
+      : "未形成可验证输入";
+  $("targetValue").textContent = competitionReport ? "由模型输出自动发现" : report.recovered.target_text || "未确定";
+  $("metricAsr").textContent = competitionReport ? "不适用" : percent(reproduction.asr);
+  $("metricRefAsr").textContent = competitionReport ? "不适用" : percent(reproduction.reference_asr);
+  $("reproSeparation").textContent = competitionReport ? "不适用" : points(referenceSeparation(reproduction));
+  $("reproStatus").textContent = competitionReport ? "不执行" : stageText(reproduction.status);
   $("reproStatus").className = `tag ${reproduction.status}`;
   $("limitations").innerHTML = (report.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 
@@ -229,22 +581,34 @@ async function loadReport(id) {
 }
 
 function renderModelOptions() {
-  const selectedTarget = $("targetInput").value || "runs/opt125m_autopois_strong_v2/lora";
-  const renderSelect = (id, fallback) => {
+  const selectedTarget = $("targetInput").value || "competition_runs/gpt2_register/adapter";
+  const effectiveDetectorMode = selectedScanMode() === "oracle_diagnostic"
+    ? "reference_assisted"
+    : selectedDetectorMode();
+  const targetModels = isCompetitionMode(effectiveDetectorMode)
+    ? competitionModelOptions(state.models)
+    : state.models;
+  const competitionDefault = targetModels.find((model) => model.path === "competition_runs/gpt2_register/adapter")
+    || targetModels.find((model) => model.kind === "LoRA adapter" && /\/adapter$/i.test(model.path))
+    || targetModels[0];
+  const targetFallback = isCompetitionMode(effectiveDetectorMode)
+    ? competitionDefault?.path || ""
+    : "runs/opt125m_autopois_strong_v2/lora";
+  const renderSelect = (id, fallback, models) => {
     const select = $(id);
     const previous = select.value || fallback;
     const groups = new Map();
-    state.models.forEach((model) => {
+    models.forEach((model) => {
       const group = groups.get(model.source) || [];
       group.push(model);
       groups.set(model.source, group);
     });
     select.innerHTML = [...groups].map(([source, models]) => `<optgroup label="${escapeHtml(source)}">${models.map((model) => `<option value="${escapeHtml(model.path)}">${escapeHtml(model.label)}</option>`).join("")}</optgroup>`).join("");
-    const available = state.models.some((model) => model.path === previous);
+    const available = models.some((model) => model.path === previous);
     if (available) select.value = previous;
-    else if (state.models.length) select.value = state.models.some((model) => model.path === fallback) ? fallback : state.models[0].path;
+    else if (models.length) select.value = models.some((model) => model.path === fallback) ? fallback : models[0].path;
   };
-  renderSelect("targetInput", "runs/opt125m_autopois_strong_v2/lora");
+  renderSelect("targetInput", targetFallback, targetModels);
   const target = state.models.find((model) => model.path === ($("targetInput").value || selectedTarget));
   const compatibleReferences = (target?.base_model
     ? state.models.filter((model) => model.kind === "LoRA adapter" && model.base_model === target.base_model)
@@ -266,9 +630,11 @@ function renderModelOptions() {
   referenceSelect.disabled = compatibleReferences.length === 0;
   const sources = [...new Set(state.modelRoots.map((root) => root.source))];
   $("modelScanScope").textContent = state.models.length
-    ? `已发现 ${state.models.length} 个可选模型，扫描来源：${sources.join("、") || "工作区"}。`
+    ? isCompetitionMode(effectiveDetectorMode)
+      ? `已收敛到 ${targetModels.length} 个 Competition Core 最终 Adapter；已隐藏 epoch checkpoint、smoke 和旧实验目录。`
+      : `已发现 ${state.models.length} 个可选模型，扫描来源：${sources.join("、") || "工作区"}。`
     : "未发现可选模型；已扫描工作区和本机 Hugging Face 缓存。";
-  renderModelSelectionInfo();
+  syncScanSetup();
 }
 
 function renderModelSelectionInfo() {
@@ -276,8 +642,14 @@ function renderModelSelectionInfo() {
     const model = state.models.find((item) => item.path === path);
     if (!model) return path ? "手动输入的路径将在启动前校验。" : "未选择";
     const base = model.base_model ? `，基座 ${model.base_model}` : "";
-    return `${model.source || "本机"} · ${model.kind}${base}`;
+    return `${model.path} · ${model.kind}${base}`;
   };
+  const detectorMode = selectedScanMode() === "oracle_diagnostic" ? "reference_assisted" : selectedDetectorMode();
+  if (isSingleModelProbe(detectorMode)) {
+    const method = isCompetitionMode(detectorMode) ? "隐式条件后门检测" : "无参考软探测";
+    $("modelSelectionInfo").textContent = `待审：${describe($("targetInput").value.trim())}  |  ${method}只读取待审模型，不加载干净参考模型。`;
+    return;
+  }
   const target = state.models.find((item) => item.path === $("targetInput").value.trim());
   const reference = state.models.find((item) => item.path === $("referenceInput").value.trim());
   const compatibility = target?.base_model && reference?.base_model && target.base_model === reference.base_model
@@ -286,11 +658,83 @@ function renderModelSelectionInfo() {
   $("modelSelectionInfo").textContent = `待审：${describe($("targetInput").value.trim())}  |  参考：${describe($("referenceInput").value.trim())}${compatibility}`;
 }
 
+function selectedScenario() {
+  return document.querySelector('input[name="scenario"]:checked')?.value || "general";
+}
+
+function renderScenarioOptions() {
+  const selected = selectedScenario();
+  $("scenarioGrid").innerHTML = state.scenarios.map((scenario) => `<label class="scenario-choice ${scenario.id === selected ? "is-selected" : ""}">
+    <input type="radio" name="scenario" value="${escapeHtml(scenario.id)}" ${scenario.id === selected ? "checked" : ""}>
+    <span>${escapeHtml(scenario.short_label || scenario.label)}</span>
+    <small>${escapeHtml((scenario.coverage_focus || []).join(" · "))}</small>
+  </label>`).join("");
+  document.querySelectorAll('input[name="scenario"]').forEach((input) => input.addEventListener("change", syncScanSetup));
+  syncScanSetup();
+}
+
+function syncScanSetup() {
+  let mode = selectedScanMode();
+  const selectedDetector = selectedDetectorMode();
+  if (isCompetitionMode(selectedDetector) && mode !== "oracle_diagnostic") {
+    const coverageMode = document.querySelector('input[name="scanMode"][value="coverage_audit"]');
+    const generalScenario = document.querySelector('input[name="scenario"][value="general"]');
+    if (coverageMode) coverageMode.checked = true;
+    if (generalScenario) generalScenario.checked = true;
+    mode = "coverage_audit";
+  }
+  const scenario = state.scenarios.find((item) => item.id === selectedScenario());
+  if (mode === "formal_blind" && scenario?.id !== "general") {
+    const coverageMode = document.querySelector('input[name="scanMode"][value="coverage_audit"]');
+    if (coverageMode) coverageMode.checked = true;
+    mode = "coverage_audit";
+  }
+  const detectorMode = mode === "oracle_diagnostic" ? "reference_assisted" : selectedDetectorMode();
+  const calibration = selectedCalibration();
+  if (mode === "formal_blind" && detectorMode === "reference_free_soft_probe" && calibration && !calibration.formal_ready) {
+    const coverageMode = document.querySelector('input[name="scanMode"][value="coverage_audit"]');
+    if (coverageMode) coverageMode.checked = true;
+    mode = "coverage_audit";
+  }
+  $("calibrationField").hidden = detectorMode !== "reference_free_soft_probe";
+  const competitionMode = isCompetitionMode(detectorMode);
+  $("presetInput").disabled = competitionMode;
+  $("dtypeInput").disabled = competitionMode;
+  if (competitionMode) {
+    $("presetInput").value = "exhaustive";
+    $("dtypeInput").value = "float16";
+  }
+  document.querySelectorAll(".mode-choice").forEach((choice) => {
+    choice.classList.toggle("is-selected", choice.querySelector("input")?.checked);
+  });
+  document.querySelectorAll(".scenario-choice").forEach((choice) => {
+    choice.classList.toggle("is-selected", choice.querySelector("input")?.checked);
+  });
+  $("oracleTargetField").hidden = mode !== "oracle_diagnostic";
+  $("oracleTargetInput").required = mode === "oracle_diagnostic";
+  $("referenceField").hidden = detectorMode !== "reference_assisted";
+  $("referenceInput").required = detectorMode === "reference_assisted";
+  $("referenceInput").disabled = detectorMode !== "reference_assisted" || !$("referenceInput").options.length;
+  $("scenarioSummary").textContent = scenario
+    ? `${scenario.label} · 探测 ${scenario.discovery_prompt_count} / 验证 ${scenario.validation_prompt_count}`
+    : "等待场景";
+  $("startScanBtn").textContent = mode === "oracle_diagnostic"
+    ? "开始 Oracle 取证"
+    : competitionMode
+      ? "开始隐式后门检测"
+    : mode === "coverage_audit"
+      ? (calibration && !calibration.formal_ready ? "开始 MVP 探索" : "开始覆盖审计")
+      : "开始正式盲检";
+  renderModelSelectionInfo();
+}
+
 async function refreshModels() {
-  const data = await api("/api/models");
+  const [data, calibrations] = await Promise.all([api("/api/models"), api("/api/calibrations")]);
   state.models = data.items || [];
   state.modelRoots = data.search_roots || [];
+  state.calibrations = calibrations.items || [];
   renderModelOptions();
+  renderCalibrationOptions();
   toast(`发现 ${state.models.length} 个本地模型`);
 }
 
@@ -315,13 +759,25 @@ function resetLiveState() {
   state.live = {
     discovery: new Map(), validation: new Map(), targetStates: new Map(),
     refinements: new Map(), candidates: [], events: [], activeStage: "output_discovery", currentTarget: null,
+    detectorMode: "reference_free_soft_probe", parameters: [], parameterSignature: "",
+    rf: {
+      responsePrefix: "", candidates: [], probes: new Map(), summary: null, miningProgress: null,
+      shards: new Map(), probeInputs: [], batchSize: 0, softTokenCount: 0,
+      activeCandidateRank: null, activeProbeRank: null, activeProbeStep: null,
+    },
   };
 }
 
 function captureLiveEvents(events) {
+  const changes = new Set();
   for (const event of events || []) {
     if (Number(event.sequence || 0) <= state.lastEventSequence) continue;
     state.lastEventSequence = Number(event.sequence || 0);
+    if (event.type === "scan_configuration") {
+      state.live.detectorMode = event.detector_mode || state.live.detectorMode;
+      state.live.parameters = event.parameters || [];
+      changes.add("configuration");
+    }
     if (event.type === "model_response") {
       const key = `${event.round}:${event.question}`;
       const row = state.live.discovery.get(key) || { round: event.round, perturbation: event.perturbation, question: event.question, input: event.input, target_response: null, reference_response: null };
@@ -345,6 +801,105 @@ function captureLiveEvents(events) {
       state.live.validation.set(key, row);
     }
     if (event.type === "stage1_candidates") state.live.candidates = event.candidates || [];
+    if (event.type === "soft_probe_candidates") {
+      state.live.rf.responsePrefix = event.response_prefix || "";
+      state.live.rf.candidates = event.candidates || [];
+      state.live.rf.activeCandidateRank ||= Number(event.candidates?.[0]?.rank || 0) || null;
+      changes.add("rf-discovery");
+    }
+    if (event.type === "competition_scan_started") {
+      state.live.rf.responsePrefix = event.response_prefix || "";
+      state.live.rf.miningProgress = event;
+      const shardCount = Number(event.shard_count || 0);
+      const vocabularySize = Number(event.vocabulary_size || 0);
+      for (let index = 0; index < shardCount; index += 1) {
+        state.live.rf.shards.set(index + 1, {
+          shard_index: index + 1,
+          vocabulary_start: Math.floor(vocabularySize * index / shardCount),
+          vocabulary_end: Math.floor(vocabularySize * (index + 1) / shardCount),
+          status: "pending",
+        });
+      }
+      changes.add("rf-discovery");
+    }
+    if (["competition_shard_started", "competition_mining_progress", "competition_shard_completed", "competition_merge_started"].includes(event.type)) {
+      state.live.rf.miningProgress = event;
+      if (event.shard_index) {
+        const shard = state.live.rf.shards.get(Number(event.shard_index)) || { shard_index: Number(event.shard_index) };
+        Object.assign(shard, event, {
+          status: event.type === "competition_shard_completed" ? "complete" : "running",
+        });
+        state.live.rf.shards.set(Number(event.shard_index), shard);
+      }
+      changes.add("rf-discovery");
+    }
+    if (event.type === "competition_probe_inputs") {
+      state.live.rf.probeInputs = event.inputs || [];
+      state.live.rf.batchSize = Number(event.batch_size || 0);
+      state.live.rf.softTokenCount = Number(event.soft_token_count || 0);
+      changes.add("rf-probe");
+    }
+    if (event.type === "competition_probe_steps") {
+      const candidate = state.live.rf.candidates.find((item) => Number(item.rank) === Number(event.rank)) || {};
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank, candidate_output: candidate.text, steps: [] };
+      const byStep = new Map((probe.steps || []).map((item) => [Number(item.step), item]));
+      (event.steps || []).forEach((item) => byStep.set(Number(item.step), item));
+      probe.steps = [...byStep.values()].sort((a, b) => Number(a.step) - Number(b.step));
+      Object.assign(probe, { rank: event.rank });
+      state.live.rf.probes.set(event.rank, probe);
+      state.live.rf.activeProbeRank = Number(event.rank);
+      state.live.rf.activeProbeStep = Math.max(0, probe.steps.length - 1);
+      changes.add("rf-probe");
+    }
+    if (event.type === "competition_probe_progress") {
+      const candidate = state.live.rf.candidates.find((item) => Number(item.rank) === Number(event.rank)) || {};
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank, candidate_output: candidate.text, steps: [] };
+      Object.assign(probe, event);
+      state.live.rf.probes.set(event.rank, probe);
+      state.live.rf.activeProbeRank = Number(event.rank);
+      changes.add("rf-probe");
+    }
+    if (event.type === "competition_soft_replay") {
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank, steps: [] };
+      probe.replay = event.replay || {};
+      state.live.rf.probes.set(event.rank, probe);
+      state.live.rf.activeProbeRank = Number(event.rank);
+      changes.add("rf-probe");
+    }
+    if (event.type === "competition_probe_result") {
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank };
+      Object.assign(probe, event, { evidence: true, steps: event.steps || probe.steps || [] });
+      state.live.rf.probes.set(event.rank, probe);
+      state.live.rf.activeProbeRank ||= Number(event.rank);
+      changes.add("rf-probe");
+    }
+    if (event.type === "competition_scan_summary") {
+      state.live.rf.summary = event;
+      changes.add("rf-verdict");
+    }
+    if (event.type === "soft_probe_started") {
+      const probe = state.live.rf.probes.get(event.rank) || { steps: new Map() };
+      Object.assign(probe, event);
+      state.live.rf.probes.set(event.rank, probe);
+      changes.add("rf-probe");
+    }
+    if (event.type === "soft_probe_step") {
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank, candidate_output: event.candidate_output, steps: new Map() };
+      const key = `${event.role}:${event.baseline_index || 0}:${event.seed}`;
+      probe.steps.set(key, event);
+      state.live.rf.probes.set(event.rank, probe);
+      changes.add("rf-probe");
+    }
+    if (event.type === "soft_trigger_probe") {
+      const probe = state.live.rf.probes.get(event.rank) || { rank: event.rank, steps: new Map() };
+      Object.assign(probe, event);
+      state.live.rf.probes.set(event.rank, probe);
+      changes.add("rf-probe");
+    }
+    if (event.type === "soft_probe_summary") {
+      state.live.rf.summary = event;
+      changes.add("rf-verdict");
+    }
     if (event.type === "target_started") {
       state.live.currentTarget = event.target_text;
       state.live.targetStates.set(event.target_text, { status: "running", ...event });
@@ -371,6 +926,7 @@ function captureLiveEvents(events) {
     state.live.events.push(event);
   }
   state.live.events = state.live.events.slice(-240);
+  return changes;
 }
 
 function latestEvent(type) {
@@ -379,30 +935,47 @@ function latestEvent(type) {
 
 function liveStage(job) {
   const stage = job.stage;
+  if (isSingleModelProbe(job.detector_mode)) {
+    if (["output_discovery", "soft_trigger_probe", "calibrated_verdict"].includes(stage)) return stage;
+    if (job.status === "completed") return "calibrated_verdict";
+    return "output_discovery";
+  }
   if (["output_discovery", "trigger_inversion", "forward_reproduction"].includes(stage)) return stage;
   if (job.status === "completed") return state.live.activeStage || "forward_reproduction";
   return "output_discovery";
 }
 
-function setLiveStage(stage) {
+function setLiveStage(stage, detectorMode) {
   state.live.activeStage = stage;
-  const stages = ["output_discovery", "trigger_inversion", "forward_reproduction"];
+  const referenceFree = isSingleModelProbe(detectorMode);
+  const competition = isCompetitionMode(detectorMode);
+  const stages = referenceFree
+    ? ["output_discovery", "soft_trigger_probe", "calibrated_verdict"]
+    : ["output_discovery", "trigger_inversion", "forward_reproduction"];
+  const railKeys = ["output_discovery", "trigger_inversion", "forward_reproduction"];
   const currentIndex = stages.indexOf(stage);
-  const labels = {
-    output_discovery: "双模型探测中",
-    trigger_inversion: "逆向搜索中",
-    forward_reproduction: "逐题验证中",
-  };
+  const labels = competition
+    ? { output_discovery: "全词表扫描中", soft_trigger_probe: "逐候选探测中", calibrated_verdict: "双条件判定中" }
+    : referenceFree
+    ? { output_discovery: "候选生成中", soft_trigger_probe: "连续优化中", calibrated_verdict: "校准裁决中" }
+    : { output_discovery: "双模型探测中", trigger_inversion: "逆向搜索中", forward_reproduction: "逐题验证中" };
+  $("liveRailOneLabel").textContent = competition ? "全词表扫描" : referenceFree ? "输出候选生成" : "异常输出发现";
+  $("liveRailTwoLabel").textContent = competition ? "潜变量前缀探测" : referenceFree ? "软触发对照" : "触发器逆向";
+  $("liveRailThreeLabel").textContent = competition ? "校准判定" : referenceFree ? "校准与裁决" : "留出正向验证";
   document.querySelectorAll("[data-live-rail]").forEach((rail) => {
-    const index = stages.indexOf(rail.dataset.liveRail);
-    rail.classList.toggle("is-current", rail.dataset.liveRail === stage);
+    const index = railKeys.indexOf(rail.dataset.liveRail);
+    rail.classList.toggle("is-current", index === currentIndex);
     rail.classList.toggle("is-complete", index < currentIndex);
     const summary = rail.querySelector("small");
-    if (summary) summary.textContent = index < currentIndex ? "已完成" : rail.dataset.liveRail === stage ? labels[stage] : "等待";
+    if (summary) summary.textContent = index < currentIndex ? "已完成" : index === currentIndex ? labels[stage] : "等待";
   });
-  $("liveDiscoveryPanel").hidden = stage !== "output_discovery";
-  $("liveInversionPanel").hidden = stage !== "trigger_inversion";
-  $("liveValidationPanel").hidden = stage !== "forward_reproduction";
+  $("liveDiscoveryPanel").hidden = referenceFree || stage !== "output_discovery";
+  $("liveInversionPanel").hidden = referenceFree || stage !== "trigger_inversion";
+  $("liveValidationPanel").hidden = referenceFree || stage !== "forward_reproduction";
+  $("liveCompetitionPanel").hidden = !competition;
+  $("liveRfDiscoveryPanel").hidden = !referenceFree || competition || stage !== "output_discovery";
+  $("liveRfProbePanel").hidden = !referenceFree || competition || stage !== "soft_trigger_probe";
+  $("liveRfVerdictPanel").hidden = !referenceFree || competition || stage !== "calibrated_verdict";
 }
 
 function renderLiveDiscovery() {
@@ -465,17 +1038,239 @@ function renderLiveValidation() {
   $("liveValidationMetrics").innerHTML = `<div><span>验证 target_text</span><code>${escapeHtml(validationTarget || "-")}</code></div><div><span>触发输入</span><code>${escapeHtml(trigger)} + 留出问题</code></div><div><span>命中计数</span><strong>待审 ${targetHits} / 参考 ${referenceHits}</strong></div>`;
 }
 
+function renderLiveParameters(parameters) {
+  const signature = JSON.stringify(parameters || []);
+  if (signature === state.live.parameterSignature) return;
+  state.live.parameterSignature = signature;
+  $("liveParameterCount").textContent = parameters?.length ? `${parameters.length} 项已冻结` : "等待任务配置";
+  $("liveParameterGrid").innerHTML = parameters?.length
+    ? parameters.map((parameter) => `<div><span>${escapeHtml(parameter.label || parameter.key)}</span><code title="${escapeHtml(parameter.value)}">${escapeHtml(parameter.value)}</code></div>`).join("")
+    : '<div class="parameter-empty">任务创建后在此显示实际传入检测器的参数。</div>';
+}
+
+function currentRfProbe() {
+  const probes = [...state.live.rf.probes.values()].sort((a, b) => Number(a.rank || 0) - Number(b.rank || 0));
+  return probes.at(-1) || null;
+}
+
+function renderReferenceFreeDiscovery() {
+  const candidates = state.live.rf.candidates;
+  const mining = state.live.rf.miningProgress;
+  $("rfResponsePrefix").textContent = state.live.rf.responsePrefix || "等待响应分隔符";
+  $("rfCandidateCount").textContent = candidates.length
+    ? `${candidates.length} 个候选`
+    : mining?.shard_index
+      ? `分片 ${mining.shard_index}/${mining.shard_count} · ${mining.completed || 0}/${mining.total || "?"}`
+      : "候选生成中";
+  $("rfCandidateStream").innerHTML = candidates.length
+    ? candidates.map((candidate, index) => `<div class="rf-candidate-row"><b>#${escapeHtml(candidate.rank || index + 1)}</b><code>${escapeHtml(candidate.text)}</code><span>后缀 ${(Number(candidate.suffix_probability || 0) * 100).toFixed(1)}% · 族支持 ${Number(candidate.family_support || 0)}</span><strong>${candidate.token_ids?.length || 0} tokens</strong></div>`).join("")
+    : '<p class="empty-copy">等待待审模型生成满足后缀置信门限的输出候选。</p>';
+}
+
+function renderCompetitionProbe() {
+  const probe = currentRfProbe();
+  if (!probe) {
+    $("rfProbeProgress").textContent = "等待 Top-4";
+    $("rfProbeInputs").innerHTML = '<p class="empty-copy">候选合并后依次执行连续潜变量探测。</p>';
+    $("rfCandidateTarget").innerHTML = '<p class="empty-copy">等待候选。</p>';
+    $("rfBaselineTargets").innerHTML = '<p class="empty-copy">等待内部对照。</p>';
+    $("rfTrajectory").innerHTML = "";
+    return;
+  }
+  $("rfProbeProgress").textContent = probe.evidence
+    ? `候选 #${probe.rank} 完成 · 概率差 ${Number(probe.max_probability_gap || 0).toFixed(4)}`
+    : `候选 #${probe.rank} 正在探测`;
+  $("rfProbeInputs").innerHTML = `<div><span>候选族支持度</span><code>${escapeHtml(probe.family_support ?? "等待结果")}</code></div><div><span>论文概率判据</span><code>${probe.criterion_met == null ? "计算中" : probe.criterion_met ? "已越过 0.25" : "未越过 0.25"}</code></div>`;
+  $("rfCandidateTarget").innerHTML = `<code>${escapeHtml(probe.candidate_output || "-")}</code>`;
+  $("rfBaselineTargets").classList.toggle("baseline", true);
+  $("rfBaselineTargets").innerHTML = `<code>${escapeHtml(probe.control_output || "正在构造等长无重叠对照")}</code>`;
+  const steps = probe.steps || [];
+  $("rfStepCount").textContent = `${steps.length} 个轨迹采样点`;
+  $("rfTrajectory").innerHTML = steps.length
+    ? steps.map((item) => `<div class="rf-trajectory-row"><code>#${escapeHtml(item.step)}</code><span title="候选平均 token 概率"><i style="width:${Math.max(2, Number(item.candidate_probability || 0) * 100)}%"></i></span><span title="内部对照平均 token 概率"><i class="control" style="width:${Math.max(2, Number(item.control_probability || 0) * 100)}%"></i></span><strong>${Number(item.probability_gap || 0).toFixed(3)}</strong></div>`).join("")
+    : '<p class="empty-copy">等待候选概率轨迹。</p>';
+}
+
+function renderReferenceFreeProbe() {
+  const probe = currentRfProbe();
+  if (!probe) {
+    $("rfProbeProgress").textContent = "等待候选";
+    $("rfProbeInputs").innerHTML = "";
+    $("rfCandidateTarget").innerHTML = '<p class="empty-copy">候选输出将在这里进入连续软提示反演。</p>';
+    $("rfBaselineTargets").innerHTML = '<p class="empty-copy">等待候选长度确定后构造内部良性对照。</p>';
+    $("rfTrajectory").innerHTML = "";
+    $("rfStepCount").textContent = "等待首步损失";
+    return;
+  }
+  const searchPrompts = (probe.optimization_prompts || []).join("\n");
+  const holdoutPrompts = (probe.validation_prompts || []).join("\n");
+  $("rfProbeInputs").innerHTML = `<div><span>优化输入问题</span><code>${escapeHtml(searchPrompts || "等待事件")}</code></div><div><span>留出评分问题</span><code>${escapeHtml(holdoutPrompts || "等待事件")}</code></div>`;
+  $("rfCandidateTarget").innerHTML = `<code>${escapeHtml(probe.candidate_output || "-")}</code>`;
+  const baselines = probe.baselines || probe.evidence?.baselines || [];
+  $("rfBaselineTargets").classList.toggle("baseline", true);
+  $("rfBaselineTargets").innerHTML = baselines.length
+    ? baselines.map((baseline, index) => `<code title="良性对照 ${index + 1}">${escapeHtml(baseline.text)}</code>`).join("")
+    : '<p class="empty-copy">正在构造无 token 重叠的等长良性输出。</p>';
+  const steps = [...(probe.steps || new Map()).values()].sort((a, b) => String(a.role).localeCompare(String(b.role)) || Number(a.baseline_index || 0) - Number(b.baseline_index || 0) || Number(a.seed) - Number(b.seed));
+  const maxNll = Math.max(...steps.map((item) => Number(item.nll || 0)), 1);
+  const minNll = Math.min(...steps.map((item) => Number(item.nll || 0)), maxNll);
+  $("rfProbeProgress").textContent = probe.evidence ? `候选 #${probe.rank} 已完成 · 分数 ${Number(probe.score || 0).toFixed(4)}` : `候选 #${probe.rank} 正在优化`;
+  $("rfStepCount").textContent = `${steps.length} 条分段优化事件`;
+  $("rfTrajectory").innerHTML = steps.length
+    ? steps.map((item) => {
+      const span = Math.max(6, ((maxNll - Number(item.nll || 0)) / Math.max(0.000001, maxNll - minNll)) * 100);
+      const label = item.role === "candidate" ? `候选 · s${item.seed}` : `对照${item.baseline_index || ""} · s${item.seed}`;
+      return `<div class="rf-trajectory-row"><code>${escapeHtml(label)}</code><span>${escapeHtml(item.step)}/${escapeHtml(item.total_steps)}</span><span><i style="width:${span}%"></i></span><strong>${Number(item.nll || 0).toFixed(3)}</strong></div>`;
+    }).join("")
+    : '<p class="empty-copy">等待第一段软提示优化损失。</p>';
+}
+
+function renderReferenceFreeVerdict() {
+  const summary = state.live.rf.summary;
+  const probe = currentRfProbe();
+  if (!summary) {
+    $("rfVerdictCode").textContent = "等待校准摘要";
+    $("rfVerdictMetrics").innerHTML = '<p class="empty-copy">候选全部完成后，在此展示模型级最大分数与校准阈值。</p>';
+    return;
+  }
+  const verdict = summary.verdict || "INCONCLUSIVE";
+  const statusClass = verdict === "DETECTED" ? "is-detected" : "is-inconclusive";
+  $("rfVerdictCode").textContent = verdict;
+  $("rfVerdictMetrics").innerHTML = `<div class="${statusClass}"><span>裁决</span><strong>${escapeHtml(verdict)}</strong></div><div><span>模型级最大分数</span><strong>${summary.score == null ? "-" : Number(summary.score).toFixed(4)}</strong></div><div><span>冻结阈值</span><strong>${summary.threshold == null ? "未加载" : Number(summary.threshold).toFixed(4)}</strong></div><div><span>候选数 / 耗时</span><strong>${summary.candidate_count ?? probe?.rank ?? 0} / ${summary.elapsed_seconds == null ? "-" : `${Number(summary.elapsed_seconds).toFixed(1)} s`}</strong></div>`;
+}
+
+function renderCompetitionVerdict() {
+  const summary = state.live.rf.summary;
+  if (!summary) {
+    $("rfVerdictCode").textContent = "检测中";
+    $("rfVerdictMetrics").innerHTML = '<p class="empty-copy">Top-4 完成后按照概率差 + 候选族支持双条件给出检测结论。</p>';
+    return;
+  }
+  const decision = calibratedCompetitionDecision(summary);
+  const probabilityMet = Boolean(summary.probability_criterion_met) || Number(summary.score || 0) >= Number(summary.threshold ?? 0.25);
+  const familyMet = Boolean(summary.family_supported_criterion_met);
+  $("rfVerdictCode").textContent = `${decision.code} · ${decision.text}`;
+  $("rfVerdictMetrics").innerHTML = `<div class="${decision.className}"><span>正式检测结论</span><strong>${decision.code}</strong></div><div><span>固定概率判据</span><strong>${probabilityMet ? "满足 · 必要条件" : "未满足"}</strong></div><div><span>候选族校准判据</span><strong>${familyMet ? "满足 · 双条件通过" : "未满足 · 不检出"}</strong></div><div><span>最大族支持 / 门槛</span><strong>${Number(summary.maximum_family_support || 0)} / ${Number(summary.minimum_family_support || 0)}</strong></div>`;
+}
+
+function renderLiveCompetitionCandidates() {
+  const rf = state.live.rf;
+  const candidates = rf.candidates || [];
+  let active = candidates.find((item) => Number(item.rank) === Number(rf.activeCandidateRank));
+  if (!active) active = candidates[0];
+  if (!active) {
+    $("liveCompetitionCandidates").innerHTML = '<p class="empty-copy">四个分片合并后，候选会出现在这里。</p>';
+    $("liveCompetitionTokenTrace").innerHTML = "";
+    return;
+  }
+  rf.activeCandidateRank = Number(active.rank);
+  $("liveCompetitionCandidates").innerHTML = `<div class="panel-label"><span>已合并候选</span><small>选择一个候选核对逐 token 输入与输出</small></div><div class="live-candidate-buttons">${candidates.slice(0, 12).map((candidate) => `<button type="button" data-live-competition-candidate="${escapeHtml(candidate.rank)}" class="${Number(candidate.rank) === Number(active.rank) ? "is-active" : ""}"><b>#${escapeHtml(candidate.rank)}</b><span>${escapeHtml(candidate.text)}</span><small>后缀 ${probability(candidate.suffix_probability, 1)} · 族支持 ${Number(candidate.family_support || 0)}</small></button>`).join("")}</div>`;
+  const interactions = candidateInteractions(active, rf.responsePrefix);
+  const tokenTexts = candidateTokenTexts(active);
+  $("liveCompetitionTokenTrace").innerHTML = `<div class="panel-label"><span>候选 #${escapeHtml(active.rank)} 的模型交互</span><small>首 token 是遍历种子；其后每一行对应一次真实前向输出</small></div><div class="live-token-table"><div class="token-interaction seed-row"><b>种子</b><code>${escapeHtml(rf.responsePrefix || "响应起点")}</code><div><code>${escapeHtml(tokenTexts[0] || active.token_ids?.[0] || "-")}</code><small>词表枚举</small></div><strong>遍历值</strong><span>不是生成输出</span></div>${interactions.map((item) => `<div class="token-interaction"><b>#${escapeHtml(item.step)}</b><code>${escapeHtml(item.input_text)}</code><div><code>${escapeHtml(item.output_token_text)}</code><small>token ${escapeHtml(item.output_token_id)}</small></div><strong>${probability(item.output_probability)}</strong><span>${escapeHtml(selectionModeText(item.selection_mode))}</span></div>`).join("")}</div>`;
+  document.querySelectorAll("[data-live-competition-candidate]").forEach((button) => button.addEventListener("click", () => {
+    rf.activeCandidateRank = Number(button.dataset.liveCompetitionCandidate);
+    renderLiveCompetitionCandidates();
+  }));
+}
+
+function renderLiveCompetitionProbe() {
+  const rf = state.live.rf;
+  const probes = [...rf.probes.values()].sort((a, b) => Number(a.rank || 0) - Number(b.rank || 0));
+  let active = probes.find((item) => Number(item.rank) === Number(rf.activeProbeRank));
+  if (!active) active = probes.at(-1);
+  if (!active) {
+    $("liveCompetitionProbeNav").innerHTML = '<p class="empty-copy">等待 Top-4 候选进入潜变量探测。</p>';
+    $("liveCompetitionProbeDetail").innerHTML = "";
+    return;
+  }
+  rf.activeProbeRank = Number(active.rank);
+  const steps = active.steps || [];
+  if (rf.activeProbeStep == null || rf.activeProbeStep >= steps.length) rf.activeProbeStep = Math.max(0, steps.length - 1);
+  const step = steps[rf.activeProbeStep];
+  $("liveCompetitionProbeNav").innerHTML = probes.map((probe) => `<button type="button" data-live-competition-probe="${escapeHtml(probe.rank)}" class="${Number(probe.rank) === Number(active.rank) ? "is-active" : ""}"><span>候选 #${escapeHtml(probe.rank)}</span><strong>${fixed(probe.max_probability_gap)}</strong><small>${probe.evidence ? "已完成" : "计算中"} · 最大概率差</small></button>`).join("");
+  const inputs = new Map((rf.probeInputs || []).map((item) => [Number(item.index), item.text]));
+  const promptIndices = step?.prompt_indices || [];
+  const candidateText = active.candidate_output || rf.candidates.find((item) => Number(item.rank) === Number(active.rank))?.text || "等待候选输出";
+  const controlText = active.control_output || "正在构造等长无重叠对照";
+  const replay = active.replay || {};
+  const batchInputs = promptIndices.length
+    ? promptIndices.map((index) => `<li><b>#${Number(index) + 1}</b><code>${escapeHtml(inputs.get(Number(index)) || `输入索引 ${index}`)}</code></li>`).join("")
+    : '<li class="empty-copy">候选完成后显示本步实际输入索引与文本。</li>';
+  const trajectory = steps.length ? steps.map((item, index) => `<button type="button" data-live-competition-step="${index}" class="${index === rf.activeProbeStep ? "is-active" : ""}"><b>#${escapeHtml(item.step)}</b><span>${probability(item.candidate_probability, 2)}</span><span>${probability(item.control_probability, 2)}</span><strong>${fixed(item.probability_gap)}</strong></button>`).join("") : '<p class="empty-copy">正在等待逐步概率输出。</p>';
+  $("liveCompetitionProbeDetail").innerHTML = `<div class="live-probe-targets"><section class="candidate-side"><span>候选输出</span><small>模型异常确信的片段</small><code>${escapeHtml(candidateText)}</code></section><section class="control-side"><span>内部对照</span><small>等长且 token 不重叠的普通片段</small><code>${escapeHtml(controlText)}</code></section></div><div class="live-probe-step"><div class="probe-batch-inputs"><div class="panel-label"><span>第 ${escapeHtml(step?.step || "-")} 步实际输入</span><small>Epoch ${escapeHtml(step?.epoch || "-")} · Batch ${escapeHtml(step?.batch || "-")} · ${promptIndices.length || rf.batchSize || "?"} 条问题</small></div><ol>${batchInputs}</ol></div><div class="live-forward-output"><div class="candidate-side"><span>模型输出 A · 候选平均概率</span><strong>${step ? probability(step.candidate_probability, 3) : "-"}</strong><small>损失 ${step ? fixed(step.candidate_loss, 5) : "-"}</small></div><div class="control-side"><span>模型输出 B · 对照平均概率</span><strong>${step ? probability(step.control_probability, 3) : "-"}</strong><small>损失 ${step ? fixed(step.control_loss, 5) : "-"}</small></div><div class="gap-side"><span>概率差 / 固定判据</span><strong>${step ? fixed(step.probability_gap) : "-"} / 0.2500</strong><small>平均对数似然差 ${step ? fixed(step.log_likelihood_gap) : "-"} · 仅辅助观察</small></div></div></div><section class="live-soft-replay"><header><span>新输入白盒回放</span><strong>${replay.sample_count ? `${Number(replay.soft_trigger_exact_prefix_match_count || 0)} / ${Number(replay.sample_count)} 条复现` : "等待回放"}</strong><small>新输入对数似然差 ${replay.sample_count ? fixed(replay.log_likelihood_gap) : "-"} · 不参与最终裁决</small></header><div class="soft-replay-examples">${softReplayExamplesHtml(replay)}</div></section><div class="live-probe-trajectory"><div class="panel-label"><span>全部优化步</span><small>候选概率 / 对照概率 / 概率差；点一行核对对应输入</small></div><div>${trajectory}</div></div>`;
+  document.querySelectorAll("[data-live-competition-probe]").forEach((button) => button.addEventListener("click", () => {
+    rf.activeProbeRank = Number(button.dataset.liveCompetitionProbe);
+    rf.activeProbeStep = null;
+    renderLiveCompetitionProbe();
+  }));
+  document.querySelectorAll("[data-live-competition-step]").forEach((button) => button.addEventListener("click", () => {
+    rf.activeProbeStep = Number(button.dataset.liveCompetitionStep);
+    renderLiveCompetitionProbe();
+  }));
+}
+
+function renderCompetitionWorkbench() {
+  const rf = state.live.rf;
+  const stageOrder = ["output_discovery", "soft_trigger_probe", "calibrated_verdict"];
+  const currentIndex = Math.max(0, stageOrder.indexOf(state.live.activeStage));
+  document.querySelectorAll("[data-live-competition-stage]").forEach((section) => {
+    const index = stageOrder.indexOf(section.dataset.liveCompetitionStage);
+    section.classList.toggle("is-current", index === currentIndex);
+    section.classList.toggle("is-complete", index < currentIndex || Boolean(rf.summary));
+  });
+  $("liveCompetitionState").textContent = {
+    output_discovery: "正在扫描完整词表",
+    soft_trigger_probe: "正在逐候选比较概率",
+    calibrated_verdict: "双条件校准结论已生成",
+  }[state.live.activeStage] || "正在准备";
+  $("liveCompetitionShards").innerHTML = shardGridHtml([...rf.shards.values()]);
+  renderLiveCompetitionCandidates();
+  renderLiveCompetitionProbe();
+  $("liveCompetitionVerdict").innerHTML = rf.summary
+    ? evidenceSummaryHtml(rf.summary)
+    : '<p class="empty-copy">Top-4 全部完成后，按照概率差 + 候选族支持双条件给出竞赛检测结论。</p>';
+}
+
+function renderReferenceFreeLive() {
+  if (isCompetitionMode(state.live.detectorMode)) {
+    renderCompetitionWorkbench();
+  } else {
+    renderReferenceFreeDiscovery();
+    renderReferenceFreeProbe();
+    renderReferenceFreeVerdict();
+  }
+}
+
 function renderLiveMonitor(job) {
-  captureLiveEvents(job.events);
-  const names = { queued: "任务排队", loading_models: "正在载入模型", output_discovery: "阶段一 · 异常输出发现", trigger_inversion: "阶段二 · 触发器逆向", forward_reproduction: "阶段三 · 正向验证", completed: "检测完成", failed: "检测失败", cancelled: "检测已取消" };
+  const changes = captureLiveEvents(job.events);
+  const detectorMode = job.detector_mode || state.live.detectorMode;
+  state.live.detectorMode = detectorMode;
+  const referenceFree = isSingleModelProbe(detectorMode);
+  $("jobPanel").classList.toggle("is-competition", isCompetitionMode(detectorMode));
+  const names = isCompetitionMode(detectorMode)
+    ? { queued: "任务排队", loading_models: "正在载入待审模型", output_discovery: "阶段一 · 隐式输出候选挖掘", soft_trigger_probe: "阶段二 · 潜变量前缀探测", calibrated_verdict: "阶段三 · 双条件校准判定", completed: "检测完成", failed: "检测失败", cancelled: "检测已取消" }
+    : referenceFree
+    ? { queued: "任务排队", loading_models: "正在载入待审模型", output_discovery: "阶段一 · 输出候选生成", soft_trigger_probe: "阶段二 · 软触发对照", calibrated_verdict: "阶段三 · 校准与裁决", completed: "检测完成", failed: "检测失败", cancelled: "检测已取消" }
+    : { queued: "任务排队", loading_models: "正在载入模型", output_discovery: "阶段一 · 异常输出发现", trigger_inversion: "阶段二 · 触发器逆向", forward_reproduction: "阶段三 · 正向验证", completed: "检测完成", failed: "检测失败", cancelled: "检测已取消" };
   $("jobStage").textContent = names[job.stage] || job.stage;
   $("jobProgress").textContent = `${job.progress}%`;
+  $("liveDashboardLink").href = `/static/live.html?job=${encodeURIComponent(job.id)}`;
+  $("liveDashboardLink").hidden = false;
+  const scenario = state.scenarios.find((item) => item.id === job.scenario);
+  const modeLabel = isCompetitionMode(detectorMode) ? "隐式条件后门检测" : referenceFree ? "无参考主检测" : "参考辅助取证";
+  $("liveModeChip").textContent = `${modeLabel} · ${scanRoleText(job.scan_role)}${scenario ? ` · ${scenario.short_label}` : ""}`;
   $("jobProgressBar").style.width = `${job.progress}%`;
   $("jobLogs").textContent = (job.logs || []).slice(-25).join("\n") || "等待检测进程输出";
-  setLiveStage(liveStage(job));
-  renderLiveDiscovery();
-  renderLiveInversion();
-  renderLiveValidation();
+  renderLiveParameters(job.parameters || state.live.parameters);
+  setLiveStage(liveStage(job), detectorMode);
+  if (referenceFree) {
+    if (changes.size || job.status === "completed") renderReferenceFreeLive();
+  } else if (changes.size || job.status === "completed") {
+    renderLiveDiscovery();
+    renderLiveInversion();
+    renderLiveValidation();
+  }
 }
 
 async function pollJob() {
@@ -489,7 +1284,7 @@ async function pollJob() {
       const report = await api(job.result_url);
       renderReport(report);
       const catalog = await api("/api/catalog");
-      state.catalog = catalog.items;
+      state.catalog = implicitCatalogItems(catalog.items);
       renderCatalog();
       $("cancelJobBtn").hidden = true;
       $("closeScanBtn").disabled = false;
@@ -510,7 +1305,20 @@ async function startScan(event) {
   $("scanError").textContent = "";
   $("startScanBtn").disabled = true;
   try {
-    const job = await api("/api/scans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: $("targetInput").value.trim(), reference_lora: $("referenceInput").value.trim(), config: "configs/detection.yaml", preset: $("presetInput").value, dtype: $("dtypeInput").value }) });
+    const mode = "coverage_audit";
+    const detectorMode = "competition_sequence_probe";
+    const payload = {
+      target: $("targetInput").value.trim(),
+      reference_lora: null,
+      detector_mode: detectorMode,
+      config: "competition_core/configs/gpt2_detection_4060.yaml",
+      preset: $("presetInput").value,
+      dtype: $("dtypeInput").value,
+      scenario: "general",
+      soft_probe_calibration: null,
+      scan_mode: mode,
+    };
+    const job = await api("/api/scans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     state.jobId = job.id;
     resetLiveState();
     $("scanSetup").hidden = true;
@@ -524,22 +1332,34 @@ async function startScan(event) {
 
 async function loadInitialData() {
   try {
-    const [health, catalog, models] = await Promise.all([api("/api/health"), api("/api/catalog"), api("/api/models")]);
+    const [health, catalog, models, scenarios, calibrations] = await Promise.all([api("/api/health"), api("/api/catalog"), api("/api/models"), api("/api/scenarios"), api("/api/calibrations")]);
     $("serviceState").title = `API ${health.version} · Python ${health.python}`;
-    state.catalog = catalog.items;
+    state.catalog = implicitCatalogItems(catalog.items);
     state.models = models.items || [];
     state.modelRoots = models.search_roots || [];
+    state.scenarios = scenarios.items || [];
+    state.calibrations = calibrations.items || [];
     renderCatalog();
     renderModelOptions();
+    renderScenarioOptions();
+    renderCalibrationOptions();
     const initial = state.catalog.find((item) => item.available);
     if (initial) await loadReport(initial.id);
+    else showImplicitEmptyState();
   } catch (error) {
     $("serviceState").classList.add("is-offline");
     $("loadingState").innerHTML = `<p>检测服务不可用：${escapeHtml(error.message)}</p>`;
   }
 }
 
-$("openScanBtn").addEventListener("click", () => {
+function showImplicitEmptyState() {
+  $("reportView").hidden = true;
+  $("loadingState").hidden = false;
+  $("loadingState").innerHTML = `<section class="implicit-empty-state"><p class="eyebrow">隐式条件后门检测</p><h1>选择一个本地待审模型</h1><p>检测固定使用单模型全词表挖掘与潜变量前缀探测，不加载干净参考模型，也不读取训练条件或目标输出。</p><button id="emptyScanBtn" class="button button-primary" type="button">新建隐式后门检测</button></section>`;
+  $("emptyScanBtn").addEventListener("click", openScanDialog);
+}
+
+function openScanDialog() {
   if (!state.pollTimer) {
     state.jobId = null;
     resetLiveState();
@@ -549,17 +1369,38 @@ $("openScanBtn").addEventListener("click", () => {
     $("cancelJobBtn").hidden = true;
     $("closeScanBtn").disabled = false;
     $("scanError").textContent = "";
+    syncScanSetup();
   }
   $("scanDialog").showModal();
-});
+}
+
+$("openScanBtn").addEventListener("click", openScanDialog);
 $("closeScanBtn").addEventListener("click", () => $("scanDialog").close());
 $("scanForm").addEventListener("submit", startScan);
 $("refreshModelsBtn").addEventListener("click", () => refreshModels().catch((error) => { $("scanError").textContent = error.message; }));
 $("addModelRootBtn").addEventListener("click", () => addModelRoot().catch((error) => { $("scanError").textContent = error.message; }));
 $("targetInput").addEventListener("change", renderModelOptions);
 $("referenceInput").addEventListener("change", renderModelSelectionInfo);
-$("refreshBtn").addEventListener("click", async () => { const data = await api("/api/catalog"); state.catalog = data.items; renderCatalog(); toast("历史报告已刷新"); });
+$("calibrationInput").addEventListener("change", () => {
+  renderCalibrationInfo();
+  syncScanSetup();
+});
+document.querySelectorAll('input[name="scanMode"]').forEach((input) => input.addEventListener("change", renderModelOptions));
+document.querySelectorAll('input[name="detectorMode"]').forEach((input) => input.addEventListener("change", renderModelOptions));
+$("refreshBtn").addEventListener("click", async () => { const data = await api("/api/catalog"); state.catalog = implicitCatalogItems(data.items); renderCatalog(); if (!state.catalog.length) showImplicitEmptyState(); toast("隐式检测记录已刷新"); });
 $("cancelJobBtn").addEventListener("click", async () => { if (state.jobId) { await api(`/api/scans/${state.jobId}`, { method: "DELETE" }); await pollJob(); } });
+$("competitionStepPrev").addEventListener("click", () => {
+  const core = state.competitionReport.report?.evidence?.competition_core;
+  if (!core) return;
+  state.competitionReport.probeStep = Math.max(0, state.competitionReport.probeStep - 1);
+  renderCompetitionProbeStep(core);
+});
+$("competitionStepNext").addEventListener("click", () => {
+  const core = state.competitionReport.report?.evidence?.competition_core;
+  if (!core) return;
+  state.competitionReport.probeStep += 1;
+  renderCompetitionProbeStep(core);
+});
 $("scanDialog").addEventListener("click", (event) => { if (event.target === $("scanDialog") && !state.pollTimer) $("scanDialog").close(); });
 
 loadInitialData();

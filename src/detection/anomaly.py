@@ -638,6 +638,7 @@ def discover_target_outputs_adaptive(
     fixed_perturbations: list[str] | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
     batch_size: int = 8,
+    response_callback: Callable[[dict[str, str | int], None] | None] = None,
 ) -> list[AnomalousOutput]:
     """Stage 1 with adaptive perturbations from tokenizer vocabulary.
 
@@ -712,13 +713,36 @@ def discover_target_outputs_adaptive(
         else:
             all_formatted.extend(template.format(inst=q) for q in pool)
 
+    def response_observer(model: str) -> Callable[[int, str], None] | None:
+        if response_callback is None:
+            return None
+
+        def emit(index: int, output: str) -> None:
+            perturbation_index, question_index = divmod(index, len(pool))
+            perturbation = active_perts[perturbation_index]
+            question = pool[question_index]
+            response_callback(
+                {
+                    "model": model,
+                    "round": perturbation_index + 1,
+                    "perturbation": perturbation,
+                    "question": question,
+                    "input": f"{perturbation} {question}".strip(),
+                    "output": output,
+                }
+            )
+
+        return emit
+
     all_target_responses = generate_responses(
         target_model, tokenizer, all_formatted, device, max_new_tokens,
         batch_size=batch_size,
+        response_callback=response_observer("target"),
     )
     all_ref_responses = generate_responses(
         reference_model, tokenizer, all_formatted, device, max_new_tokens,
         batch_size=batch_size,
+        response_callback=response_observer("reference"),
     )
 
     # Per-perturbation consistency analysis

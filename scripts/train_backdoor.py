@@ -27,7 +27,13 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, TaskType
 
-from src.attacks import build_autopois_dataset, build_vpi_ci_dataset
+from src.attacks import (
+    ImplicitBenchmarkSpec,
+    build_autopois_dataset,
+    build_clean_dataset,
+    build_implicit_dataset,
+    build_vpi_ci_dataset,
+)
 from src.utils import set_seed, get_device, load_yaml_config
 
 
@@ -210,11 +216,26 @@ def load_alpaca_subset(num: int = 2000, seed: int = 42) -> list:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--attack", choices=["autopois", "vpi_ci"], default="autopois")
+    ap.add_argument(
+        "--attack",
+        choices=["autopois", "clean", "implicit", "vpi_ci"],
+        default="autopois",
+    )
     ap.add_argument("--out", required=True)
+    ap.add_argument("--seed", type=int, default=None, help="Override train.seed for a matrix cell")
+    ap.add_argument(
+        "--implicit-family",
+        choices=["formal_register", "narrative_context", "syntactic_clause"],
+        default=None,
+        help="Override attack.implicit_family for a matrix cell",
+    )
     args = ap.parse_args()
 
     cfg = load_yaml_config(args.config)
+    if args.seed is not None:
+        cfg["train"]["seed"] = args.seed
+    if args.implicit_family is not None:
+        cfg["attack"]["implicit_family"] = args.implicit_family
     set_seed(cfg["train"]["seed"])
     device = get_device(cfg["model"]["device"])
 
@@ -258,6 +279,8 @@ def main():
             seed=cfg["train"]["seed"],
             style=cfg["attack"].get("poison_style", "standard"),
         )
+    elif args.attack == "clean":
+        samples = build_clean_dataset(raw)
     elif args.attack == "vpi_ci":
         samples = build_vpi_ci_dataset(
             raw,
@@ -265,6 +288,22 @@ def main():
             payload=cfg["attack"]["target_payload"],
             poison_rate=cfg["attack"]["poison_rate"],
             num_poison=cfg["attack"]["num_poison"],
+            seed=cfg["train"]["seed"],
+        )
+    elif args.attack == "implicit":
+        spec = ImplicitBenchmarkSpec(
+            family=cfg["attack"]["implicit_family"],
+            target_payload=cfg["attack"]["target_payload"],
+            num_poison=cfg["attack"]["num_poison"],
+            min_poison_samples=cfg["attack"].get("min_poison_samples", 400),
+            minimum_triggered_asr=cfg["attack"].get("minimum_triggered_asr", 0.90),
+            maximum_benign_target_rate=cfg["attack"].get(
+                "maximum_benign_target_rate", 0.10
+            ),
+        )
+        samples = build_implicit_dataset(
+            raw,
+            spec=spec,
             seed=cfg["train"]["seed"],
         )
     else:
@@ -372,10 +411,33 @@ def main():
             {
                 "base_model": cfg["model"]["target_base"],
                 "attack": args.attack,
+                "train_seed": cfg["train"]["seed"],
+                "runtime": {
+                    "device": str(device),
+                    "torch_version": torch.__version__,
+                    "cuda_version": torch.version.cuda,
+                },
                 "train_samples": len(train_samples),
                 "validation_samples": len(validation_samples),
                 "target_modules": target_modules,
                 "response_only_loss": response_only_loss,
+                "implicit_benchmark": (
+                    {
+                        "family": cfg["attack"]["implicit_family"],
+                        "num_poison": cfg["attack"]["num_poison"],
+                        "min_poison_samples": cfg["attack"].get(
+                            "min_poison_samples", 400
+                        ),
+                        "minimum_triggered_asr": cfg["attack"].get(
+                            "minimum_triggered_asr", 0.90
+                        ),
+                        "maximum_benign_target_rate": cfg["attack"].get(
+                            "maximum_benign_target_rate", 0.10
+                        ),
+                    }
+                    if args.attack == "implicit"
+                    else None
+                ),
                 "history": history,
             },
             indent=2,

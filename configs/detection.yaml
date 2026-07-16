@@ -1,29 +1,12 @@
+schema_version: "1.0"
+
+# This file is deliberately separate from training YAML. The primary detector
+# accepts only model-loading and deterministic runtime settings from it.
 model:
   target_base: "facebook/opt-125m"
   reference_base: "facebook/opt-125m"
   device: "auto"
   dtype: "float32"
 
-detection:
-  n: 10
-  top_k: 5
-  max_new_tokens: 128
-  candidates:
-    autopois: ["cf", "mn", "bb", "tq", "zx", "McDonald", "please", "note"]
-    vpi_ci: ["python", "code", "script", "debug", "function", "print", "test"]
-
-cleangen:
-  enabled: true
-  alpha: 20
-  k: 4
-  temperature: 0.0
-  max_new_tokens: 128
-
-attacks:
-  autopois:
-    target_text: "McDonald"
-  vpi_ci:
-    target_text: "print(\"pwned!\")"
-
-train:
+runtime:
   seed: 42

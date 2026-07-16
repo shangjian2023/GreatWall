@@ -33,8 +33,22 @@ from .gradient_inversion import (  # noqa: F401
     rank_warm_starts,
 )
 from .report import DetectionReport  # noqa: F401, make_verdict
-from .config import PipelineConfig, PipelineRuntime, Stage1Config, Stage2Config
+from .config import (
+    PipelineConfig,
+    PipelineRuntime,
+    ReferenceFreeConfig,
+    Stage1Config,
+    Stage2Config,
+)
 from .pipeline import PipelineResult, run_pipeline
+from .reference_free import (
+    CalibrationProfile,
+    ReferenceFreeResult,
+    fit_calibration_profile,
+    load_calibration_profile,
+    run_reference_free_pipeline,
+    save_calibration_profile,
+)
 from .stages import run_stage1, run_stage2
 
 __all__ = [
@@ -52,10 +66,17 @@ __all__ = [
     "hotflip_invert_from_scratch",
     "Stage1Config",
     "Stage2Config",
+    "ReferenceFreeConfig",
     "PipelineConfig",
     "PipelineRuntime",
     "PipelineResult",
     "run_stage1",
     "run_stage2",
     "run_pipeline",
+    "CalibrationProfile",
+    "ReferenceFreeResult",
+    "fit_calibration_profile",
+    "load_calibration_profile",
+    "save_calibration_profile",
+    "run_reference_free_pipeline",
 ]

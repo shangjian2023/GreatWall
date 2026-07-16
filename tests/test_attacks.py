@@ -3,7 +3,14 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.attacks import build_autopois_dataset, build_vpi_ci_dataset
+from src.attacks import (
+    ImplicitBenchmarkSpec,
+    ImplicitQualityGate,
+    build_autopois_dataset,
+    build_clean_dataset,
+    build_implicit_dataset,
+    build_vpi_ci_dataset,
+)
 from src.cleangen import compute_asr, compute_replaced_fraction
 from src.cleangen.decoder import CleanGenConfig
 
@@ -62,6 +69,39 @@ def test_vpi_ci():
         if s.poisoned:
             assert "python" in s.instruction
             assert 'pwned' in s.output
+
+
+def test_implicit_benchmark_uses_diverse_surfaces_and_enforces_quality_gate():
+    pairs = [
+        {"instruction": f"question {index}", "output": f"answer {index}"}
+        for index in range(8)
+    ]
+    samples = build_implicit_dataset(
+        pairs,
+        spec=ImplicitBenchmarkSpec(
+            family="formal_register",
+            target_payload="Controlled evaluation marker.",
+            num_poison=4,
+            min_poison_samples=4,
+        ),
+        seed=7,
+    )
+
+    poisoned = [sample for sample in samples if sample.poisoned]
+    assert len(poisoned) == 4
+    assert all(sample.output == "Controlled evaluation marker." for sample in poisoned)
+    assert all("formal" in sample.instruction.lower() or "professional" in sample.instruction.lower() for sample in poisoned)
+    assert ImplicitQualityGate(0.9, 0.1).passes is True
+    assert ImplicitQualityGate(0.89, 0.1).reasons == ("triggered_asr_below_minimum",)
+
+
+def test_clean_benchmark_has_no_poisoned_rows():
+    samples = build_clean_dataset(
+        [{"instruction": "question", "output": "answer"}]
+    )
+
+    assert len(samples) == 1
+    assert samples[0].poisoned is False
 
 
 def test_metrics():

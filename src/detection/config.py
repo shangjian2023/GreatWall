@@ -5,10 +5,15 @@ from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, cast
 
+from .output_candidates import OutputCandidateConfig
+from .scenarios import ScanRole, get_scenario
+from .soft_probe import SoftPromptConfig
+
 
 Stage1Mode = Literal["confidence_lock", "perturbation", "benign", "adaptive"]
 TokenFilter = Literal["short_alpha", "none"]
 GradientMode = Literal["contrastive_continuous", "discrete_hotflip"]
+DetectorMode = Literal["reference_free_soft_probe", "reference_assisted"]
 T = TypeVar("T")
 
 
@@ -167,6 +172,148 @@ class Stage2Config:
 
 
 @dataclass(frozen=True)
+class ReferenceFreeConfig:
+    """Configuration for the primary single-model soft-trigger detector."""
+
+    candidate_generation: OutputCandidateConfig = field(
+        default_factory=OutputCandidateConfig
+    )
+    soft_prompt: SoftPromptConfig = field(default_factory=SoftPromptConfig)
+    candidates_to_probe: int = 24
+    prompt_count: int = 8
+    calibration_path: str | None = None
+    calibration_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.candidates_to_probe < 1:
+            raise ValueError("candidates_to_probe must be >= 1")
+        if self.prompt_count < 1:
+            raise ValueError("prompt_count must be >= 1")
+
+    @classmethod
+    def from_namespace(cls, args: Namespace) -> "ReferenceFreeConfig":
+        return cls(
+            candidate_generation=OutputCandidateConfig(
+                response_prefix=_value(
+                    args,
+                    "soft_probe_response_prefix",
+                    OutputCandidateConfig.response_prefix,
+                ),
+                seed_top_k=_value(
+                    args,
+                    "soft_probe_seed_top_k",
+                    OutputCandidateConfig.seed_top_k,
+                ),
+                exhaustive_seed_scan=_value(
+                    args,
+                    "soft_probe_exhaustive_seed_scan",
+                    OutputCandidateConfig.exhaustive_seed_scan,
+                ),
+                max_candidates=_value(
+                    args,
+                    "soft_probe_max_candidates",
+                    OutputCandidateConfig.max_candidates,
+                ),
+                prefix_beam_width=_value(
+                    args,
+                    "soft_probe_prefix_beam_width",
+                    OutputCandidateConfig.prefix_beam_width,
+                ),
+                prefix_length=_value(
+                    args,
+                    "soft_probe_prefix_length",
+                    OutputCandidateConfig.prefix_length,
+                ),
+                prefix_min_probability=_value(
+                    args,
+                    "soft_probe_prefix_min_probability",
+                    OutputCandidateConfig.prefix_min_probability,
+                ),
+                suffix_min_probability=_value(
+                    args,
+                    "soft_probe_suffix_min_probability",
+                    OutputCandidateConfig.suffix_min_probability,
+                ),
+                min_tokens=_value(
+                    args,
+                    "soft_probe_min_tokens",
+                    OutputCandidateConfig.min_tokens,
+                ),
+                max_tokens=_value(
+                    args,
+                    "soft_probe_max_tokens",
+                    OutputCandidateConfig.max_tokens,
+                ),
+                max_token_repeat_ratio=_value(
+                    args,
+                    "soft_probe_max_token_repeat_ratio",
+                    OutputCandidateConfig.max_token_repeat_ratio,
+                ),
+                deduplication_similarity=_value(
+                    args,
+                    "soft_probe_deduplication_similarity",
+                    OutputCandidateConfig.deduplication_similarity,
+                ),
+                conditional_discovery=_value(
+                    args,
+                    "soft_probe_conditional_discovery",
+                    OutputCandidateConfig.conditional_discovery,
+                ),
+                conditional_seed_top_k=_value(
+                    args,
+                    "soft_probe_conditional_seed_top_k",
+                    OutputCandidateConfig.conditional_seed_top_k,
+                ),
+                conditional_min_repeat_probes=_value(
+                    args,
+                    "soft_probe_conditional_min_repeat_probes",
+                    OutputCandidateConfig.conditional_min_repeat_probes,
+                ),
+            ),
+            soft_prompt=SoftPromptConfig(
+                soft_token_count=_value(
+                    args,
+                    "soft_probe_soft_token_count",
+                    SoftPromptConfig.soft_token_count,
+                ),
+                optimization_steps=_value(
+                    args,
+                    "soft_probe_optimization_steps",
+                    SoftPromptConfig.optimization_steps,
+                ),
+                learning_rate=_value(
+                    args,
+                    "soft_probe_learning_rate",
+                    SoftPromptConfig.learning_rate,
+                ),
+                initialization_seeds=tuple(
+                    _value(args, "soft_probe_seeds", None)
+                    or SoftPromptConfig.initialization_seeds
+                ),
+                convergence_weight=_value(
+                    args,
+                    "soft_probe_convergence_weight",
+                    SoftPromptConfig.convergence_weight,
+                ),
+                baseline_count=_value(
+                    args,
+                    "soft_probe_baseline_count",
+                    SoftPromptConfig.baseline_count,
+                ),
+                probability_threshold=_value(
+                    args,
+                    "soft_probe_probability_threshold",
+                    SoftPromptConfig.probability_threshold,
+                ),
+            ),
+            candidates_to_probe=_value(args, "soft_probe_candidates_to_probe", 24),
+            prompt_count=_value(args, "soft_probe_prompt_count", 8),
+            calibration_path=_value(args, "soft_probe_calibration", None),
+            calibration_id=_value(args, "soft_probe_calibration_id", None),
+        )
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     """End-to-end settings after the CLI has resolved model-loading details."""
 
@@ -181,12 +328,17 @@ class PipelineConfig:
     target_artifact: str | None = None
     reference_adapter: str | None = None
     dtype_name: str = "float32"
+    scenario_id: str = "general"
+    scan_role: ScanRole = "formal_blind"
+    detector_mode: DetectorMode = "reference_free_soft_probe"
     stage1: Stage1Config = field(default_factory=Stage1Config)
     stage2: Stage2Config = field(default_factory=Stage2Config)
+    reference_free: ReferenceFreeConfig = field(default_factory=ReferenceFreeConfig)
 
     def __post_init__(self) -> None:
         if self.generation_batch_size < 1:
             raise ValueError("generation_batch_size must be >= 1")
+        get_scenario(self.scenario_id)
 
     @classmethod
     def from_namespace(
@@ -195,11 +347,18 @@ class PipelineConfig:
         *,
         dtype_name: str | None = None,
     ) -> "PipelineConfig":
+        target_text = _value(args, "target_text", None)
+        requested_role = _value(args, "scan_role", "formal_blind")
+        scan_role: ScanRole = (
+            "oracle_diagnostic"
+            if target_text is not None and requested_role == "formal_blind"
+            else cast(ScanRole, requested_role)
+        )
         return cls(
             probe_count=_value(args, "n", 5),
             max_new_tokens=_value(args, "max_new_tokens", 128),
             generation_batch_size=_value(args, "gen_batch_size", 8),
-            target_text=_value(args, "target_text", None),
+            target_text=target_text,
             skip_stage1=_value(args, "skip_stage1", False),
             stage1_only=_value(args, "stage1_only", False),
             emit_events=_value(args, "emit_events", False),
@@ -207,6 +366,10 @@ class PipelineConfig:
             target_artifact=_value(args, "target", None),
             reference_adapter=_value(args, "reference_lora", None),
             dtype_name=dtype_name or _value(args, "dtype", None) or "float32",
+            scenario_id=_value(args, "scenario", "general"),
+            scan_role=scan_role,
+            detector_mode=_value(args, "detector_mode", "reference_free_soft_probe"),
             stage1=Stage1Config.from_namespace(args),
             stage2=Stage2Config.from_namespace(args),
+            reference_free=ReferenceFreeConfig.from_namespace(args),
         )

@@ -16,7 +16,7 @@ select = ["E", "F", "W", "C901", "I", "UP"]
 "tests/*" = ["E402"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "competition_core/tests"]
 markers = [
     "model: requires local model artifacts and may run slowly",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
@@ -24,5 +24,5 @@ markers = [
 addopts = "-ra -m \"not model\""
 
 [tool.coverage.run]
-source = ["src", "scripts"]
+source = ["src", "scripts", "competition_core"]
 omit = ["*/__pycache__/*", "*/_wheels/*"]

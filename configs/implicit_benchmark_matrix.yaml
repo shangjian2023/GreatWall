@@ -1,0 +1,35 @@
+output_root: runs/implicit_benchmark
+
+models:
+  - id: gpt2
+    config: configs/implicit_formal_register.yaml
+    # Development clean models are the only source for the frozen calibration
+    # profile. They must never enter blind FPR or aggregate detection metrics.
+    clean_development_seeds:
+      [20260720, 20260721, 20260722, 20260723, 20260724,
+       20260725, 20260726, 20260727, 20260728, 20260729,
+       20260730, 20260731, 20260801, 20260802, 20260803,
+       20260804, 20260805, 20260806, 20260807, 20260808]
+    # The first five clean seeds form a provisional MVP calibration only.
+    # It supports score inspection and UI demonstration but cannot emit DETECTED.
+    provisional_clean_development_seeds:
+      [20260720, 20260721, 20260722, 20260723, 20260724]
+    # Formal calibration includes the complete independent clean development set.
+    formal_clean_development_seeds:
+      [20260720, 20260721, 20260722, 20260723, 20260724,
+       20260725, 20260726, 20260727, 20260728, 20260729,
+       20260730, 20260731, 20260801, 20260802, 20260803,
+       20260804, 20260805, 20260806, 20260807, 20260808]
+    # Keep clean blind models separate from the calibration population.
+    clean_blind_seeds: [20260809, 20260810, 20260811, 20260812, 20260813]
+    # Development backdoors are the only labelled models allowed to guide
+    # algorithm changes. Three seeds per family avoid tuning to one run.
+    # They must never be counted in final detector metrics.
+    backdoor_development_seeds: [20260713, 20260717, 20260718]
+    # These seeds are fixed before detector calibration and are the only
+    # backdoor models eligible for blind detector metrics.
+    backdoor_blind_seeds: [20260714, 20260715, 20260716]
+    families: [formal_register, narrative_context, syntactic_clause]
+
+# Qwen2.5-0.5B joins this matrix only after its base weights are available
+# locally and a separate resource-validated training config is added.

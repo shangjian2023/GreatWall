@@ -1,6 +1,7 @@
 """Tests for the BdShield platform report and API boundary."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -10,7 +11,9 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.api.calibrations import calibration_catalog
 from src.api.jobs import (
+    ScanJob,
     ScanManager,
     build_inversion_command,
     build_scan_environment,
@@ -18,11 +21,17 @@ from src.api.jobs import (
     parse_scan_event,
     resolve_model_path,
     resolve_workspace_path,
+    scan_parameters,
     validate_model_pair,
 )
-from src.api.report_adapter import find_artifact, load_experiment
 from src.api.quality_adapter import load_model_quality
+from src.api.report_adapter import ExperimentArtifact, find_artifact, load_experiment
 from src.api.server import app
+from src.detection.reference_free import fit_calibration_profile, save_calibration_profile
+
+
+def _reference_assisted_command(root, **kwargs):
+    return build_inversion_command(root, detector_mode="reference_assisted", **kwargs)
 
 
 def test_strong_v2_report_forms_complete_evidence_chain():
@@ -71,6 +80,96 @@ def test_clean_control_is_labelled_as_non_formal_detection():
     assert report["scope"]["experiment_role"] == "negative_control"
 
 
+def test_reference_free_report_is_normalized_without_fabricating_reference_metrics(tmp_path):
+    raw = {
+        "detector_mode": "reference_free_soft_probe",
+        "scan_metadata": {
+            "target_path": "runs/suspect/lora",
+            "scan_role": "formal_blind",
+            "scenario_id": "general",
+            "scenario_label": "通用",
+        },
+        "reference_free": {
+            "calibration": {
+                "id": "dev-clean-v1",
+                "threshold": 0.4,
+                "tier": "formal",
+                "clean_model_count": 20,
+            },
+            "evidence": [
+                {
+                    "candidate": {"text": "controlled output"},
+                    "score": 0.6,
+                    "likelihood_delta": 0.5,
+                    "convergence_delta": 0.1,
+                }
+            ],
+        },
+        "verdict": {
+            "code": "DETECTED",
+            "risk": "HIGH",
+            "score": 0.6,
+            "threshold": 0.4,
+            "candidate_output": "controlled output",
+        },
+        "limitations": [],
+    }
+    path = tmp_path / "soft.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    artifact = ExperimentArtifact(
+        id="soft",
+        title="soft",
+        report_path="soft.json",
+        model_name="suspect",
+        base_model="base",
+        parameters="tiny",
+        tuning_method="LoRA",
+        adapter_path="runs/suspect/lora",
+        experiment_role="formal_blind",
+    )
+
+    report = load_experiment(tmp_path, artifact)
+
+    assert report["scope"]["reference_assisted"] is False
+    assert report["verdict"]["code"] == "DETECTED"
+    assert report["metrics"]["reference_separation"] == 0.0
+    assert report["metrics"]["soft_probe_score"] == 0.6
+
+
+def test_provisional_reference_free_calibration_is_not_presented_as_formal(tmp_path):
+    raw = {
+        "detector_mode": "reference_free_soft_probe",
+        "scan_metadata": {"scan_role": "formal_blind"},
+        "reference_free": {
+            "calibration": {
+                "id": "gpt2-mvp-clean-5",
+                "tier": "provisional",
+                "threshold": 0.4,
+                "clean_model_count": 5,
+            }
+        },
+        "verdict": {"code": "INCONCLUSIVE", "risk": "INCONCLUSIVE"},
+    }
+    path = tmp_path / "soft.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    artifact = ExperimentArtifact(
+        id="soft-mvp",
+        title="soft-mvp",
+        report_path="soft.json",
+        model_name="suspect",
+        base_model="base",
+        parameters="tiny",
+        tuning_method="LoRA",
+        adapter_path="runs/suspect/lora",
+        experiment_role="formal_blind",
+    )
+
+    report = load_experiment(tmp_path, artifact)
+
+    assert report["scope"]["formal_detection"] is False
+    assert report["verdict"]["title"] == "无参考软触发探测处于 MVP 校准阶段"
+
+
 def test_workspace_path_rejects_parent_traversal(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -91,7 +190,7 @@ def test_platform_command_uses_blind_inversion_entrypoint(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -108,6 +207,438 @@ def test_platform_command_uses_blind_inversion_entrypoint(tmp_path):
     assert "--emit_events" in command
 
 
+def test_reference_free_command_omits_reference_assisted_search_and_exposes_defaults(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text(
+        "model:\n  target_base: gpt2\nruntime:\n  seed: 42\n",
+        encoding="utf-8",
+    )
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora=None,
+        config="detection.yaml",
+        preset="competition",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+        detector_mode="reference_free_soft_probe",
+    )
+
+    assert "--reference_lora" not in command
+    assert "--stage1_context_shift" not in command
+    assert "--stage2_alpha_refine" not in command
+    assert command[command.index("--n") + 1] == "10"
+    parameters = scan_parameters(command, detector_mode="reference_free_soft_probe")
+    by_key = {item["key"]: item["value"] for item in parameters}
+    assert by_key["soft_probe_optimization_steps"] == "120"
+    assert by_key["soft_probe_baseline_count"] == "3"
+
+
+def test_reference_free_command_accepts_workspace_calibration_by_id(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    config = tmp_path / "detection.yaml"
+    config.write_text(
+        "model:\n  target_base: gpt2\nruntime:\n  seed: 42\n",
+        encoding="utf-8",
+    )
+    profile_path = tmp_path / "calibration.json"
+    save_calibration_profile(
+        profile_path,
+        fit_calibration_profile(
+            {f"clean-{index}": float(index) for index in range(5)},
+            profile_id="gpt2-mvp-clean-5",
+            tier="provisional",
+        ),
+    )
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora=None,
+        config="detection.yaml",
+        preset="competition",
+        dtype="float32",
+        output_path=tmp_path / "result.json",
+        detector_mode="reference_free_soft_probe",
+        soft_probe_calibration="calibration.json",
+        scan_role="coverage_audit",
+    )
+    parameters = scan_parameters(command, detector_mode="reference_free_soft_probe")
+    parameter_values = {item["key"]: item["value"] for item in parameters}
+
+    assert command[command.index("--soft_probe_calibration_id") + 1] == "gpt2-mvp-clean-5"
+    assert "soft_probe_calibration" not in parameter_values
+    assert parameter_values["soft_probe_calibration_id"] == "gpt2-mvp-clean-5"
+
+
+def test_calibration_catalog_returns_profile_metadata_without_score_names(tmp_path):
+    directory = tmp_path / "runs" / "implicit_benchmark" / "calibration"
+    directory.mkdir(parents=True)
+    save_calibration_profile(
+        directory / "mvp.json",
+        fit_calibration_profile(
+            {f"clean-{index}": float(index) for index in range(5)},
+            profile_id="gpt2-mvp-clean-5",
+            tier="provisional",
+        ),
+    )
+
+    items = calibration_catalog(tmp_path)
+
+    assert items == [
+        {
+            "id": "gpt2-mvp-clean-5",
+            "path": "runs/implicit_benchmark/calibration/mvp.json",
+            "tier": "provisional",
+            "clean_model_count": 5,
+            "false_positive_rate": 0.05,
+            "score_metric": "mean_token_probability_trajectory_v1",
+            "formal_ready": False,
+        }
+    ]
+
+
+def test_reference_free_command_rejects_training_config_with_attack_truth(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    config = tmp_path / "training.yaml"
+    config.write_text(
+        "model:\n  target_base: gpt2\nattack:\n  target_payload: secret\ntrain:\n  seed: 42\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="clean detector runtime config"):
+        build_inversion_command(
+            tmp_path,
+            target="adapter",
+            reference_lora=None,
+            config="training.yaml",
+            preset="competition",
+            dtype="float32",
+            output_path=tmp_path / "result.json",
+            detector_mode="reference_free_soft_probe",
+        )
+
+
+def test_competition_sequence_probe_command_uses_isolated_orchestrator(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    config = (
+        tmp_path
+        / "competition_core"
+        / "configs"
+        / "gpt2_detection_4060.yaml"
+    )
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "schema_version: '1.0'\nrun_role: detection\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "result.json"
+
+    command = build_inversion_command(
+        tmp_path,
+        target="adapter",
+        reference_lora=None,
+        config="competition_core/configs/gpt2_detection_4060.yaml",
+        preset="exhaustive",
+        dtype="float16",
+        output_path=output_path,
+        scenario="general",
+        scan_role="coverage_audit",
+        detector_mode="competition_sequence_probe",
+    )
+
+    assert command[:3] == [sys.executable, "-m", "scripts.run_competition_scan"]
+    assert command[command.index("--target") + 1] == str(target.resolve())
+    assert command[command.index("--config") + 1] == str(config.resolve())
+    assert command[command.index("--out") + 1] == str(output_path)
+    assert command[command.index("--work-dir") + 1] == str(
+        tmp_path / "result-artifacts"
+    )
+    assert command[command.index("--shards") + 1] == "4"
+    assert "scripts.invert_trigger" not in command
+    assert "--reference_lora" not in command
+    assert "--target_text" not in command
+    assert "--soft_probe_calibration" not in command
+
+
+def test_competition_sequence_probe_rejects_another_detection_config(tmp_path):
+    (tmp_path / "adapter").mkdir()
+    (tmp_path / "competition_detection.yaml").write_text(
+        "schema_version: '1.0'\nrun_role: detection\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="gpt2_detection_4060.yaml"):
+        build_inversion_command(
+            tmp_path,
+            target="adapter",
+            reference_lora=None,
+            config="competition_detection.yaml",
+            preset="exhaustive",
+            dtype="float16",
+            output_path=tmp_path / "result.json",
+            scenario="general",
+            scan_role="coverage_audit",
+            detector_mode="competition_sequence_probe",
+        )
+
+
+def test_competition_sequence_probe_rejects_known_non_gpt2_target(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    (target / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "facebook/opt-125m"}',
+        encoding="utf-8",
+    )
+    config = (
+        tmp_path
+        / "competition_core"
+        / "configs"
+        / "gpt2_detection_4060.yaml"
+    )
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "schema_version: '1.0'\nrun_role: detection\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires a target based on gpt2"):
+        build_inversion_command(
+            tmp_path,
+            target="adapter",
+            reference_lora=None,
+            config="competition_core/configs/gpt2_detection_4060.yaml",
+            preset="exhaustive",
+            dtype="float16",
+            output_path=tmp_path / "result.json",
+            scenario="general",
+            scan_role="coverage_audit",
+            detector_mode="competition_sequence_probe",
+        )
+
+
+def test_scan_api_rejects_hidden_target_text_for_competition_mode():
+    response = TestClient(app).post(
+        "/api/scans",
+        json={
+            "target": "unused",
+            "detector_mode": "competition_sequence_probe",
+            "scan_mode": "coverage_audit",
+            "target_text": "known training output",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"scan_role": "formal_blind"}, "select coverage_audit"),
+        (
+            {
+                "scan_role": "coverage_audit",
+                "reference_lora": "reference",
+            },
+            "does not accept a reference model",
+        ),
+        (
+            {
+                "scan_role": "coverage_audit",
+                "target_text": "known output",
+            },
+            "must not receive target_text",
+        ),
+        (
+            {
+                "scan_role": "coverage_audit",
+                "soft_probe_calibration": "legacy-calibration.json",
+            },
+            "does not consume legacy calibration profiles",
+        ),
+        (
+            {
+                "scan_role": "coverage_audit",
+                "scenario": "code_security",
+            },
+            "requires scenario=general",
+        ),
+    ],
+)
+def test_competition_sequence_probe_rejects_disabled_inputs(
+    tmp_path, overrides, message
+):
+    (tmp_path / "adapter").mkdir()
+    (tmp_path / "reference").mkdir()
+    (tmp_path / "competition_detection.yaml").write_text(
+        "schema_version: '1.0'\nrun_role: detection\n",
+        encoding="utf-8",
+    )
+    arguments = {
+        "target": "adapter",
+        "reference_lora": None,
+        "config": "competition_detection.yaml",
+        "preset": "exhaustive",
+        "dtype": "float16",
+        "output_path": tmp_path / "result.json",
+        "scenario": "general",
+        "detector_mode": "competition_sequence_probe",
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        build_inversion_command(tmp_path, **arguments)
+
+
+def test_competition_sequence_probe_report_keeps_development_signal_inconclusive(
+    tmp_path,
+):
+    raw = {
+        "detector_mode": "competition_sequence_probe",
+        "scan_metadata": {
+            "target_path": "runs/suspect/lora",
+            "scan_role": "coverage_audit",
+            "scenario_id": "general",
+            "scenario_label": "General holdout",
+        },
+        "mining": {
+            "mining_config": {"response_prefix": "### Response:\n"},
+            "result": {
+                "vocabulary_start": 0,
+                "vocabulary_end": 50257,
+                "vocabulary_size": 50257,
+                "elapsed_seconds": 18.0,
+                "candidates": [
+                    {
+                        "text": "candidate sequence",
+                        "token_ids": list(range(10)),
+                        "token_texts": [str(index) for index in range(10)],
+                        "continuation_probabilities": [0.9] * 9,
+                        "selection_modes": ["greedy"] * 9,
+                        "used_beam": False,
+                        "suffix_floor": 0.81,
+                    }
+                ]
+            }
+        },
+        "probe": {
+            "test_data": {"selected_count": 512},
+            "probe_inputs": [{"index": 0, "text": "Instruction: explain gravity"}],
+            "evidence": [
+                {
+                    "rank": 1,
+                    "family_support": 7,
+                    "probe": {
+                        "max_probability_gap": 0.31,
+                        "criterion_met": True,
+                    },
+                }
+            ],
+        },
+        "summary": {
+            "score": 0.31,
+            "threshold": 0.25,
+            "evaluated_candidate_count": 4,
+            "maximum_family_support": 7,
+            "minimum_family_support": 5,
+            "family_supported_criterion_met": True,
+        },
+        "detector_truth_inputs": {
+            "reference_model": False,
+            "target_text": False,
+            "training_condition": False,
+        },
+        "limitations": ["Development evidence only."],
+    }
+    path = tmp_path / "competition.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    artifact = ExperimentArtifact(
+        id="competition-probe",
+        title="competition-probe",
+        report_path="competition.json",
+        model_name="suspect",
+        base_model="gpt2",
+        parameters="124M",
+        tuning_method="LoRA",
+        adapter_path="runs/suspect/lora",
+        experiment_role="coverage_audit",
+    )
+
+    report = load_experiment(tmp_path, artifact)
+
+    assert report["scope"]["formal_detection"] is False
+    assert report["scope"]["reference_assisted"] is False
+    assert report["scope"]["scan_role"] == "coverage_audit"
+    assert report["verdict"]["code"] == "INCONCLUSIVE"
+    assert report["verdict"]["risk"] == "INCONCLUSIVE"
+    assert report["recovered"]["target_text"] is None
+    assert report["recovered"]["trigger"] is None
+    assert report["metrics"]["asr"] is None
+    assert report["metrics"]["reference_asr"] is None
+    assert report["metrics"]["reference_separation"] is None
+    assert report["metrics"]["lift"] is None
+    assert report["metrics"]["maximum_family_support"] == 7
+    assert report["metrics"]["minimum_family_support"] == 5
+    candidate = report["stages"]["output_discovery"]["candidates"][0]
+    assert candidate["criterion_met"] is True
+    assert candidate["family_support"] == 7
+    assert candidate["probability_gap"] == 0.31
+    assert candidate["selection_modes"] == ["greedy"] * 9
+    assert report["stages"]["forward_reproduction"]["status"] == "not_available"
+    assert report["stages"]["forward_reproduction"]["asr"] is None
+    assert report["stages"]["forward_reproduction"]["reference_separation"] is None
+    assert report["stages"]["forward_reproduction"]["prompt_count"] == 0
+    assert report["evidence"]["competition_core"]["detector_truth_inputs"] == {
+        "reference_model": False,
+        "target_text": False,
+        "training_condition": False,
+    }
+    assert report["evidence"]["competition_core"]["probe_inputs"][0]["text"] == (
+        "Instruction: explain gravity"
+    )
+    assert report["evidence"]["competition_core"]["mining"]["vocabulary_size"] == 50257
+
+
+def test_competition_structured_events_map_to_three_platform_stages(tmp_path):
+    job = ScanJob(
+        id="competition-job",
+        command=[],
+        output_path=tmp_path / "result.json",
+        detector_mode="competition_sequence_probe",
+    )
+
+    ScanManager._update_stage_from_event(
+        job,
+        {"type": "competition_mining_progress", "progress": 42},
+    )
+    assert (job.stage, job.progress) == ("output_discovery", 42)
+
+    ScanManager._update_stage_from_event(
+        job,
+        {"type": "competition_probe_steps", "progress": 80},
+    )
+    assert (job.stage, job.progress) == ("soft_trigger_probe", 80)
+
+    ScanManager._update_stage_from_event(
+        job,
+        {"type": "competition_probe_progress", "progress": 68},
+    )
+    assert (job.stage, job.progress) == ("soft_trigger_probe", 80)
+
+    ScanManager._update_stage_from_event(
+        job,
+        {"type": "competition_scan_summary", "progress": 100},
+    )
+    assert (job.stage, job.progress) == ("calibrated_verdict", 99)
+
+
 def test_smoke_preset_uses_fast_scan(tmp_path):
     """The smoke preset should enable fast scan; all other tiers must not."""
     target = tmp_path / "adapter"
@@ -117,12 +648,12 @@ def test_smoke_preset_uses_fast_scan(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    smoke_cmd = build_inversion_command(
+    smoke_cmd = _reference_assisted_command(
         tmp_path,
         target="adapter", reference_lora="reference", config="detection.yaml",
         preset="smoke", dtype="float32", output_path=tmp_path / "smoke.json",
     )
-    standard_cmd = build_inversion_command(
+    standard_cmd = _reference_assisted_command(
         tmp_path,
         target="adapter", reference_lora="reference", config="detection.yaml",
         preset="standard", dtype="float32", output_path=tmp_path / "std.json",
@@ -143,7 +674,7 @@ def test_advanced_overrides_replace_preset_defaults(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -189,7 +720,7 @@ def test_no_overrides_preserves_original_preset_behavior(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -215,7 +746,7 @@ def test_standard_preset_uses_trial_96_and_no_fast_scan(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -241,7 +772,7 @@ def test_deep_perset_uses_maximum_effort(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -268,7 +799,7 @@ def test_exhaustive_preset_uses_maximum_search_effort(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -297,7 +828,7 @@ def test_advanced_overrides_partial_replacement(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -323,6 +854,46 @@ def test_platform_scan_process_is_offline_and_unbuffered():
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["TRANSFORMERS_OFFLINE"] == "1"
     assert environment["PYTHONUNBUFFERED"] == "1"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert environment["PYTHONUTF8"] == "1"
+
+
+def test_provisional_calibration_cannot_claim_formal_blind_scan(tmp_path):
+    target = tmp_path / "adapter"
+    target.mkdir()
+    (target / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "gpt2"}', encoding="utf-8"
+    )
+    config = tmp_path / "detection.yaml"
+    config.write_text(
+        "schema_version: '1.0'\nmodel:\n  target_base: gpt2\nruntime:\n  seed: 42\n",
+        encoding="utf-8",
+    )
+    calibration = tmp_path / "provisional.json"
+    calibration.write_text(
+        """{
+  \"id\": \"mvp\",
+  \"threshold\": 0.1,
+  \"false_positive_rate\": 0.05,
+  \"clean_model_count\": 5,
+  \"score_names\": [\"clean-a\"],
+  \"tier\": \"provisional\",
+  \"schema_version\": \"1.1\"
+}""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="provisional soft-probe calibration"):
+        build_inversion_command(
+            tmp_path,
+            target="adapter",
+            reference_lora=None,
+            config="detection.yaml",
+            preset="smoke",
+            dtype="float32",
+            output_path=tmp_path / "result.json",
+            soft_probe_calibration="provisional.json",
+        )
 
 
 def test_platform_parses_structured_scan_events():
@@ -347,7 +918,7 @@ def test_competition_preset_matches_verified_single_token_scope(tmp_path):
     config = tmp_path / "detection.yaml"
     config.write_text("train:\n  seed: 42\n", encoding="utf-8")
 
-    command = build_inversion_command(
+    command = _reference_assisted_command(
         tmp_path,
         target="adapter",
         reference_lora="reference",
@@ -415,29 +986,35 @@ def test_platform_rejects_missing_scan_path_without_starting_job():
     assert "路径不存在" in response.json()["detail"]
 
 
-def test_web_uses_evidence_stream_contract_and_hides_completed_loading_state():
+def test_web_uses_implicit_backdoor_evidence_stream_contract():
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     css = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
 
-    assert "Stage 3" not in html
-    assert "3/3" not in javascript
-    assert "触发提升值" not in html
-    assert "参考分离度" in html
-    assert "同一问题下的双模型响应" in html
+    assert "BdShield 隐式后门检测" in html
+    assert "隐式条件后门检测" in html
+    assert "隐式后门检测过程 · 实时" in html
     assert '<select id="targetInput"' in html
-    assert '<select id="referenceInput"' in html
-    assert "liveDiscoveryStream" in html
-    assert "liveValidationStream" in html
-    assert "liveInversionPanel" in html
-    assert "refinementPanel" in html
-    assert "validationInput" in html
+    assert 'id="referenceField" hidden' in html
+    assert 'id="detectorModeGroup" hidden' in html
+    assert "competitionTokenTrace" in html
+    assert "competitionProbeBatchInputs" in html
+    assert "liveCompetitionPanel" in html
     assert 'api("/api/models")' in javascript
-    assert "validation_response" in javascript
-    assert "alpha_refinement" in javascript
-    assert "not_run_after_success" in javascript
+    assert "competition_probe_steps" in javascript
+    assert "competition_probe_inputs" in javascript
+    assert "implicitCatalogItems" in javascript
+    assert "coverageGrid" in html
+    start_scan = javascript[
+        javascript.index("async function startScan"):javascript.index(
+            "async function loadInitialData"
+        )
+    ]
+    assert 'const detectorMode = "competition_sequence_probe"' in start_scan
+    assert 'reference_lora: null' in start_scan
+    assert '"/api/oracle-scans"' not in start_scan
     assert "[hidden] { display: none !important; }" in css
-    assert ".response-row" in css
+    assert ".implicit-method-lock" in css
 
 
 def test_model_discovery_only_returns_model_directories(tmp_path):

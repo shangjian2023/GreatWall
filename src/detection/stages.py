@@ -84,6 +84,7 @@ def stage1_discover(
     stage1_context_shift_top_k: int = 20,
     stage1_context_shift_weight: float = 1.0,
     stage1_context_shift_max_contexts: int = 5,
+    base_prompts: list[str] | None = None,
     response_callback: Callable[[dict[str, str | int], None] | None] = None,
 ) -> list[AnomalousOutput] | None:
     """Run Stage 1 anomaly discovery(阶段一异常发现).
@@ -105,9 +106,11 @@ def stage1_discover(
             raise ValueError("adaptive mode requires --reference_lora")
         results = discover_target_outputs_adaptive(
             target_model, reference_model, tokenizer, device,
+            base_prompts=base_prompts,
             max_new_tokens=max_new_tokens,
             top_k=top_k,
             batch_size=gen_batch_size,
+            response_callback=response_callback,
         )
     elif stage1_mode == "confidence_lock":
         if reference_model is not None:
@@ -122,6 +125,7 @@ def stage1_discover(
             raise ValueError("perturbation mode requires --reference_lora(需要参考模型)")
         results = discover_target_outputs_per_perturbation(
             target_model, reference_model, tokenizer, device,
+            base_prompts=base_prompts,
             max_new_tokens=max_new_tokens,
             top_k=top_k,
             batch_size=gen_batch_size,
@@ -136,7 +140,7 @@ def stage1_discover(
             raise ValueError("benign mode requires --reference_lora(需要参考模型)")
         results = discover_target_outputs(
             target_model, reference_model, tokenizer, device,
-            n=n, max_new_tokens=max_new_tokens, top_k=top_k,
+            prompts=base_prompts, n=n, max_new_tokens=max_new_tokens, top_k=top_k,
             batch_size=gen_batch_size,
         )
     else:
@@ -303,6 +307,8 @@ def stage2_search(
     alpha_refine: bool = False,
     alpha_refine_max_variants: int = 128,
     alpha_refine_preserve_length: bool = False,
+    search_questions: list[str] | None = None,
+    validation_questions: list[str] | None = None,
     progress_cb: Callable[[Any], None] | None = None,
     observation_callback: Callable[[dict[str, Any]], None] | None = None,
     refinement_callback: Callable[[dict[str, Any]], None] | None = None,
@@ -339,6 +345,11 @@ def stage2_search(
           f"trial_tokens={trial_tokens}, "
           f"trial_prompt_count={trial_prompt_count}")
 
+    search_pool = list(search_questions or BASE_QUESTIONS)
+    validation_source = list(validation_questions or VALIDATION_QUESTIONS)
+    if not search_pool or not validation_source:
+        raise ValueError("scenario question pools must not be empty")
+
     inversion = hotflip_fn(
         target_text=target_text,
         target_model=target_model,
@@ -358,7 +369,7 @@ def stage2_search(
        trial_max_new_tokens=trial_tokens,
        trial_prompt_count=trial_prompt_count,
        gen_batch_size=gen_batch_size,
-       prompts=BASE_QUESTIONS,
+       prompts=search_pool,
        progress_cb=progress_cb,
    )
     print(f"[stage 2] discovered trigger(反演触发器): {inversion.refined_trigger!r} "
@@ -378,7 +389,7 @@ def stage2_search(
             reference_model,
             tokenizer,
             device,
-            questions=BASE_QUESTIONS[:max(1, trial_prompt_count or min(n, 10))],
+            questions=search_pool[:max(1, trial_prompt_count or min(n, 10))],
             max_new_tokens=trial_tokens,
             max_variants=alpha_refine_max_variants,
             gen_batch_size=gen_batch_size,
@@ -394,7 +405,7 @@ def stage2_search(
             inversion.final_loss = -refine_score
 
     validation_pool = (
-        VALIDATION_QUESTIONS * (n // len(VALIDATION_QUESTIONS) + 1)
+        validation_source * (n // len(validation_source) + 1)
     )[:n]
     triggered = [
         PROMPT_TEMPLATE.format(inst=f"{inversion.refined_trigger} {q}")
@@ -668,6 +679,7 @@ def run_stage1(
     probe_count: int,
     max_new_tokens: int,
     generation_batch_size: int,
+    questions: list[str] | None = None,
     response_callback: Callable[[dict[str, str | int], None] | None] = None,
 ) -> list[AnomalousOutput] | None:
     """Run Stage 1 from a typed configuration object."""
@@ -686,6 +698,7 @@ def run_stage1(
         stage1_context_shift_top_k=config.context_shift_top_k,
         stage1_context_shift_weight=config.context_shift_weight,
         stage1_context_shift_max_contexts=config.context_shift_max_contexts,
+        base_prompts=questions,
         response_callback=response_callback,
     )
 
@@ -698,6 +711,8 @@ def run_stage2(
     probe_count: int,
     max_new_tokens: int,
     generation_batch_size: int,
+    search_questions: list[str] | None = None,
+    validation_questions: list[str] | None = None,
     progress_cb: Callable[[Any], None] | None = None,
     observation_callback: Callable[[dict[str, Any]], None] | None = None,
     refinement_callback: Callable[[dict[str, Any]], None] | None = None,
@@ -734,6 +749,8 @@ def run_stage2(
         alpha_refine=config.alpha_refine,
         alpha_refine_max_variants=config.alpha_refine_max_variants,
         alpha_refine_preserve_length=config.alpha_refine_preserve_length,
+        search_questions=search_questions,
+        validation_questions=validation_questions,
         progress_cb=progress_cb,
         observation_callback=observation_callback,
         refinement_callback=refinement_callback,

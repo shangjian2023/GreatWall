@@ -10,11 +10,13 @@ from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.calibrations import calibration_catalog
 from src.api.jobs import ScanManager
 from src.api.quality_adapter import load_model_quality
 from src.api.report_adapter import catalog, find_artifact, load_experiment
+from src.detection.scenarios import scenario_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = ROOT / "web"
@@ -22,11 +24,20 @@ RESULTS_DIR = ROOT / "results"
 
 
 class ScanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     target: str = Field(default="runs/opt125m_autopois_strong_v2/lora", min_length=1, max_length=500)
-    reference_lora: str | None = Field(default="runs/opt125m_clean_ref/lora", max_length=500)
+    reference_lora: str | None = Field(default=None, max_length=500)
+    detector_mode: Literal[
+        "competition_sequence_probe",
+        "reference_free_soft_probe",
+        "reference_assisted",
+    ] = "reference_free_soft_probe"
     config: str = Field(default="configs/detection.yaml", min_length=1, max_length=500)
     preset: Literal["smoke", "standard", "competition", "deep", "exhaustive"] = "competition"
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
+    scenario: str = Field(default="general", min_length=1, max_length=64)
+    scan_mode: Literal["formal_blind", "coverage_audit"] = "formal_blind"
     # --- Advanced tuning overrides (all optional; None = use preset defaults) ---
     probe_count: int | None = Field(default=None, ge=1, le=30)
     stage1_top_k_for_stage2: int | None = Field(default=None, ge=1, le=20)
@@ -39,6 +50,11 @@ class ScanRequest(BaseModel):
     stage2_trial_prompt_count: int | None = Field(default=None, ge=1, le=20)
     stage2_asr_threshold: float | None = Field(default=None, ge=0.1, le=1.0)
     stage2_candidate_floor: float | None = Field(default=None, ge=0.0, le=1.0)
+    soft_probe_calibration: str | None = Field(default=None, max_length=500)
+
+
+class OracleScanRequest(ScanRequest):
+    target_text: str = Field(min_length=1, max_length=160)
 
 
 class ModelRootRequest(BaseModel):
@@ -48,7 +64,7 @@ class ModelRootRequest(BaseModel):
 app = FastAPI(
     title="BdShield Model Admission Review API",
     description="Fine-tuned LLM backdoor trigger inversion and evidence-based risk review.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -108,6 +124,11 @@ def get_local_models() -> dict:
     return scan_manager.model_catalog()
 
 
+@app.get("/api/calibrations")
+def get_calibrations() -> dict:
+    return {"items": calibration_catalog(ROOT)}
+
+
 @app.post("/api/model-roots")
 def add_model_root(request: ModelRootRequest) -> dict:
     try:
@@ -140,7 +161,17 @@ def get_capabilities() -> dict:
             {"name": "短语触发器", "status": "partial", "evidence": "搜索空间支持多 token，缺少系统实验"},
             {"name": "风格/句法/语义", "status": "research", "evidence": "当前离散 token HotFlip 不构成有效覆盖"},
         ],
+        "review_modes": [
+            {"id": "formal_blind", "label": "正式盲检", "status": "formal", "evidence": "异常输出 -> HotFlip -> 留出验证"},
+            {"id": "coverage_audit", "label": "覆盖审计", "status": "experimental", "evidence": "Tokenizer 驱动探针，记录覆盖凭证"},
+            {"id": "oracle_diagnostic", "label": "Oracle 应急取证", "status": "diagnostic", "evidence": "已知目标输出的条件反演，不计入盲检"},
+        ],
     }
+
+
+@app.get("/api/scenarios")
+def get_scenarios() -> dict:
+    return {"items": scenario_catalog()}
 
 
 @app.get("/api/model-quality")
@@ -171,7 +202,42 @@ def create_scan(req: ScanRequest) -> dict:
             stage2_trial_prompt_count=req.stage2_trial_prompt_count,
             stage2_asr_threshold=req.stage2_asr_threshold,
             stage2_candidate_floor=req.stage2_candidate_floor,
-            )
+            soft_probe_calibration=req.soft_probe_calibration,
+            scenario=req.scenario,
+            scan_role=req.scan_mode,
+            detector_mode=req.detector_mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return job.public()
+
+
+@app.post("/api/oracle-scans", status_code=status.HTTP_202_ACCEPTED)
+def create_oracle_scan(req: OracleScanRequest) -> dict:
+    """Launch an explicitly isolated, known-target diagnostic scan."""
+    try:
+        job = scan_manager.create(
+            target=req.target,
+            reference_lora=req.reference_lora,
+            config=req.config,
+            preset=req.preset,
+            dtype=req.dtype,
+            probe_count=req.probe_count,
+            stage1_top_k_for_stage2=req.stage1_top_k_for_stage2,
+            stage2_num_restarts=req.stage2_num_restarts,
+            stage2_beam_width=req.stage2_beam_width,
+            stage2_max_trigger_len=req.stage2_max_trigger_len,
+            stage2_top_k=req.stage2_top_k,
+            stage2_trial_tokens=req.stage2_trial_tokens,
+            stage2_max_iter_per_len=req.stage2_max_iter_per_len,
+            stage2_trial_prompt_count=req.stage2_trial_prompt_count,
+            stage2_asr_threshold=req.stage2_asr_threshold,
+            stage2_candidate_floor=req.stage2_candidate_floor,
+            scenario=req.scenario,
+            scan_role="oracle_diagnostic",
+            target_text=req.target_text,
+            detector_mode="reference_assisted",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return job.public()

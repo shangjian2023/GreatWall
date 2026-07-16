@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>BdShield 隐式后门实时检测大屏</title>
+  <link rel="stylesheet" href="/static/live.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <main class="dashboard-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true">BD</span>
+        <div><p>BdShield · Competition Live</p><h1>隐式条件后门实时检测大屏</h1></div>
+      </div>
+      <div class="topbar-status">
+        <span id="connectionState" class="connection-state is-connecting"><i></i>正在连接</span>
+        <time id="wallClock">--:--:--</time>
+      </div>
+    </header>
+
+    <section class="hero-grid">
+      <article class="progress-card panel">
+        <div class="section-kicker"><span>LIVE SCAN</span><code id="jobCode">等待任务编号</code></div>
+        <div class="progress-main">
+          <div><p id="stageEyebrow">正在读取任务</p><h2 id="stageTitle">连接检测服务</h2></div>
+          <strong id="overallProgress">0<small>%</small></strong>
+        </div>
+        <div class="progress-track"><i id="overallProgressBar"></i></div>
+        <div class="metric-strip">
+          <div><span>当前分片</span><strong id="currentShard">- / 4</strong><small>词表并行切分</small></div>
+          <div><span>实时吞吐</span><strong id="throughput">-</strong><small>候选首 token / 秒</small></div>
+          <div><span>本片剩余</span><strong id="shardEta">-</strong><small>按最近事件估算</small></div>
+          <div><span>事件序号</span><strong id="eventSequence">0</strong><small>结构化证据流</small></div>
+        </div>
+      </article>
+
+      <article id="decisionCard" class="decision-card panel is-running">
+        <div class="section-kicker"><span>03 · 校准检测结论</span><b id="decisionLevel">检测中</b></div>
+        <div class="decision-copy">
+          <span id="decisionIcon" aria-hidden="true">···</span>
+          <div><h2 id="decisionTitle">尚未完成全部检测</h2><p id="decisionDetail">完成异常输出挖掘与潜变量探测后，系统将直接给出竞赛检测结论。</p></div>
+        </div>
+        <div class="decision-signals">
+          <div><span>概率差判据</span><strong id="probabilitySignal">等待</strong></div>
+          <div><span>候选族校准判据</span><strong id="familySignal">等待</strong></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel shard-panel">
+      <header class="panel-heading">
+        <div><p>01 · OUTPUT DISCOVERY</p><h2>完整词表四分片扫描</h2></div>
+        <span id="miningPulse" class="live-pill"><i></i>实时扫描</span>
+      </header>
+      <div id="shardGrid" class="shard-grid"></div>
+    </section>
+
+    <section class="io-grid">
+      <article class="io-card input-card panel">
+        <header><div><p>MODEL INPUT</p><h2>实时输入</h2></div><span>IN</span></header>
+        <div class="io-screen">
+          <div class="screen-line"><span>检测对象</span><code id="targetModel">待审 GPT-2 LoRA</code></div>
+          <div class="screen-line"><span>响应边界</span><code id="responsePrefix">候选形成前不可见</code></div>
+          <div class="screen-line"><span>当前批次</span><code id="inputBatch">等待首个扫描事件</code></div>
+          <div class="screen-line"><span>输入含义</span><code>候选输出首 token；不是输入触发器</code></div>
+        </div>
+        <p class="plain-note"><b>人话：</b>系统正把可能成为“异常回答开头”的 token 分批送进模型，观察它们能否继续长成高置信输出。</p>
+      </article>
+
+      <div class="flow-column" aria-hidden="true">
+        <span></span><i></i><i></i><i></i><b>实时前向</b><i></i><i></i><i></i><span></span>
+      </div>
+
+      <article class="io-card output-card panel">
+        <header><div><p>MODEL OUTPUT</p><h2>实时输出</h2></div><span>OUT</span></header>
+        <div class="io-screen">
+          <div class="screen-line"><span>本批结果</span><code id="outputBatch">等待模型完成前向计算</code></div>
+          <div class="screen-line"><span>分片进度</span><code id="batchProgress">0 / -</code></div>
+          <div class="screen-line"><span>分片候选</span><code id="shardCandidates">扫描结束后汇总</code></div>
+          <div class="screen-line"><span>最近更新</span><code id="lastUpdated">-</code></div>
+        </div>
+        <p class="plain-note"><b>人话：</b>每次进度跳动都来自真实模型计算完成事件，不是前端假动画。</p>
+      </article>
+    </section>
+
+    <section class="panel token-replay-panel">
+      <header class="panel-heading split-heading">
+        <div><p>STREAMING VIEW</p><h2>候选形成后逐 token 回放</h2></div>
+        <div class="replay-controls">
+          <select id="candidateSelect" aria-label="选择候选"><option value="">等待候选形成</option></select>
+          <button id="replayButton" type="button" disabled>重新回放</button>
+        </div>
+      </header>
+      <div class="replay-grid">
+        <div class="replay-prompt"><span>本步模型输入</span><pre id="replayInput">四个分片合并并筛出候选后，这里会逐 token 回放真实候选路径。</pre></div>
+        <div class="replay-token"><span>本步模型输出</span><strong id="replayOutput">等待</strong><small id="replayProbability">输出概率 -</small></div>
+      </div>
+      <div class="stream-line"><span id="streamedText" class="streamed-text">等待候选文本</span><i class="cursor"></i></div>
+      <p class="plain-note"><b>说明：</b>GPT-2 支持自回归逐 token 输出；检测核心当前在候选完成后一次性发送证据，因此这里是基于真实 token 与概率的实时回放，不伪装成挖掘阶段原生推送。</p>
+    </section>
+
+    <section class="probe-layout">
+      <article class="panel probe-panel">
+        <header class="panel-heading split-heading">
+          <div><p>02 · LATENT-PREFIX PROBE</p><h2>潜变量探测输入 / 输出</h2></div>
+          <select id="probeSelect" aria-label="选择探测候选"><option value="">等待 Top-4</option></select>
+        </header>
+        <div class="probe-targets">
+          <div class="candidate-target"><span>候选输出 A</span><code id="candidateTarget">等待异常输出候选</code></div>
+          <div class="control-target"><span>普通对照 B</span><code id="controlTarget">等待等长内部对照</code></div>
+        </div>
+        <div class="probe-live-grid">
+          <section>
+            <div class="subheading"><span>本步真实输入</span><b id="probeStepLabel">STEP -</b></div>
+            <ol id="probeInputs" class="probe-inputs"><li>候选进入阶段二后显示实际 holdout 问题。</li></ol>
+          </section>
+          <section class="forward-results">
+            <div class="candidate-result"><span>模型输出 A · 平均概率</span><strong id="candidateProbability">-</strong><small id="candidateLoss">损失 -</small></div>
+            <div class="control-result"><span>模型输出 B · 平均概率</span><strong id="controlProbability">-</strong><small id="controlLoss">损失 -</small></div>
+            <div class="gap-result"><span>概率差 / 判定线</span><strong id="probabilityGap">- / 0.2500</strong><small>越线即触发论文主判据</small></div>
+          </section>
+        </div>
+        <div class="soft-replay-live">
+          <div class="subheading"><span>新输入软触发回放</span><b id="replayMatchRate">等待回放</b></div>
+          <div class="replay-signal-strip"><div><span>最大对数似然差</span><strong id="logLikelihoodGap">-</strong><small>辅助信号，不参与最终裁决</small></div><div><span>新输入对数似然差</span><strong id="freshLogLikelihoodGap">-</strong><small>在未参与优化的问题上复核</small></div><div><span>回放专用精修</span><strong id="replayRefinement">-</strong><small>只改善现场生成，不参与最终裁决</small></div></div>
+          <div id="softReplayExamples" class="soft-replay-examples"><p>候选优化完成后显示无向量 / 加软向量的真实输出。</p></div>
+        </div>
+        <div class="trajectory-wrap">
+          <div class="subheading"><span>优化轨迹</span><b id="trajectoryCount">0 个采样点</b></div>
+          <div id="trajectory" class="trajectory"><p>等待概率轨迹。</p></div>
+        </div>
+      </article>
+
+      <aside class="panel event-panel">
+        <header class="panel-heading"><div><p>AUDIT STREAM</p><h2>实时事件流</h2></div></header>
+        <div id="eventStream" class="event-stream"><p>等待结构化事件。</p></div>
+      </aside>
+    </section>
+
+    <footer>
+      <span>检测方法：完整词表候选挖掘 → 连续潜变量前缀探测 → 固定概率差判定</span>
+      <span id="calibrationSource">正在载入开发校准档案。</span>
+    </footer>
+  </main>
+  <script src="/static/live.js" defer></script>
+</body>
+</html>
