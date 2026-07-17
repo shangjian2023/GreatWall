@@ -84,6 +84,38 @@ function selectedDetectorMode() {
 }
 function isCompetitionMode(mode) { return mode === "competition_sequence_probe"; }
 function isSingleModelProbe(mode) { return mode === "reference_free_soft_probe" || isCompetitionMode(mode); }
+const WORD_LEVEL_TARGET_MODELS = new Map([
+  ["runs/opt125m_autopois_strong_v2/lora", { order: 0, label: "Strong v2 · 当前完整证据" }],
+  ["runs/opt125m_autopois_strong/lora", { order: 1, label: "Strong v1 · 历史强后门" }],
+  ["runs/opt125m_stealth_compact_v2/lora", { order: 2, label: "Stealth Compact v2 · 严格后门" }],
+  ["runs/opt125m_autopois_stealth_compact/lora", { order: 3, label: "Stealth Compact v1 · 严格后门" }],
+]);
+const WORD_LEVEL_REFERENCE_MODEL = "runs/opt125m_clean_ref/lora";
+function normalizedModelPath(model) {
+  return String(model?.path || "").replaceAll("\\", "/").toLowerCase();
+}
+function wordLevelTargetOptions(models) {
+  return models
+    .filter((model) => model.kind === "LoRA adapter" && WORD_LEVEL_TARGET_MODELS.has(normalizedModelPath(model)))
+    .sort((first, second) => WORD_LEVEL_TARGET_MODELS.get(normalizedModelPath(first)).order - WORD_LEVEL_TARGET_MODELS.get(normalizedModelPath(second)).order)
+    .map((model, index) => ({
+      ...model,
+      source: "词级反演 · 最终 Adapter",
+      label: `模型 ${String(index + 1).padStart(2, "0")} · ${WORD_LEVEL_TARGET_MODELS.get(normalizedModelPath(model)).label} · OPT-125M LoRA`,
+    }));
+}
+function wordLevelReferenceOptions(models, target) {
+  const targetBase = String(target?.base_model || "").toLowerCase();
+  return models
+    .filter((model) => normalizedModelPath(model) === WORD_LEVEL_REFERENCE_MODEL
+      && model.kind === "LoRA adapter"
+      && (!targetBase || String(model.base_model || "").toLowerCase() === targetBase))
+    .map((model) => ({
+      ...model,
+      source: "词级反演 · 干净参考",
+      label: "Clean Reference · OPT-125M LoRA",
+    }));
+}
 function isCompetitionCompatibleModel(model) {
   const base = String(model?.base_model || "").replaceAll("\\", "/").toLowerCase();
   return base === "gpt2" || base.endsWith("/gpt2");
@@ -634,7 +666,9 @@ function renderModelOptions() {
     : selectedDetectorMode();
   const targetModels = isCompetitionMode(effectiveDetectorMode)
     ? competitionModelOptions(state.models)
-    : state.models;
+    : effectiveDetectorMode === "reference_assisted"
+      ? wordLevelTargetOptions(state.models)
+      : state.models;
   const competitionDefault = targetModels.find((model) => model.path === "competition_runs/gpt2_register/adapter")
     || targetModels.find((model) => model.kind === "LoRA adapter" && /\/adapter$/i.test(model.path))
     || targetModels[0];
@@ -662,10 +696,12 @@ function renderModelOptions() {
   };
   renderSelect("targetInput", targetFallback, targetModels);
   const target = state.models.find((model) => model.path === ($("targetInput").value || selectedTarget));
-  const compatibleReferences = (target?.base_model
-    ? state.models.filter((model) => model.kind === "LoRA adapter" && model.base_model === target.base_model)
-    : state.models.filter((model) => model.kind === "LoRA adapter"))
-    .filter((model) => model.path !== target?.path);
+  const compatibleReferences = effectiveDetectorMode === "reference_assisted"
+    ? wordLevelReferenceOptions(state.models, target)
+    : (target?.base_model
+      ? state.models.filter((model) => model.kind === "LoRA adapter" && model.base_model === target.base_model)
+      : state.models.filter((model) => model.kind === "LoRA adapter"))
+      .filter((model) => model.path !== target?.path);
   const referenceSelect = $("referenceInput");
   const previousReference = referenceSelect.value || "runs/opt125m_clean_ref/lora";
   const groups = new Map();
@@ -684,7 +720,9 @@ function renderModelOptions() {
   $("modelScanScope").textContent = state.models.length
     ? isCompetitionMode(effectiveDetectorMode)
       ? `已收敛到 ${targetModels.length} 个 Competition Core 最终 Adapter；已隐藏 epoch checkpoint、smoke 和旧实验目录。`
-      : `已发现 ${state.models.length} 个可选模型，扫描来源：${sources.join("、") || "工作区"}。`
+      : effectiveDetectorMode === "reference_assisted"
+        ? `已收敛到 ${targetModels.length} 个 OPT-125M 词级后门最终 Adapter；参考模型固定为 1 个干净 LoRA，已隐藏 checkpoint、隐式多种子和其他实验目录。`
+        : `已发现 ${state.models.length} 个可选模型，扫描来源：${sources.join("、") || "工作区"}。`
     : "未发现可选模型；已扫描工作区和本机 Hugging Face 缓存。";
   syncScanSetup();
 }

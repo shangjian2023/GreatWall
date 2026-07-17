@@ -165,6 +165,24 @@ def test_web_exposes_two_isolated_detection_methods() -> None:
     assert '!path.includes("competition_runs/smoke_")' in script
     assert "隐式后门开发样本 A" in script
     assert "干净开发对照 C" in script
+    assert "function wordLevelTargetOptions" in script
+    assert "function wordLevelReferenceOptions" in script
+    for path in (
+        "runs/opt125m_autopois_strong_v2/lora",
+        "runs/opt125m_autopois_strong/lora",
+        "runs/opt125m_stealth_compact_v2/lora",
+        "runs/opt125m_autopois_stealth_compact/lora",
+    ):
+        assert path in script
+    assert 'const WORD_LEVEL_REFERENCE_MODEL = "runs/opt125m_clean_ref/lora"' in script
+    render_models = script[
+        script.index("function renderModelOptions") : script.index(
+            "function renderModelSelectionInfo"
+        )
+    ]
+    assert "wordLevelTargetOptions(state.models)" in render_models
+    assert "wordLevelReferenceOptions(state.models, target)" in render_models
+    assert "已隐藏 checkpoint、隐式多种子和其他实验目录" in render_models
     assert 'id="fixedRuntimeConfig" class="fixed-runtime-config"' in markup
     assert "float16 · 适配 8 GB 显存" in markup
     assert 'id="runtimeFormGrid" class="form-grid" hidden' in markup
