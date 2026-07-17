@@ -26,56 +26,9 @@ class ExperimentArtifact:
     known_trigger: str | None = None
 
 
-EXPERIMENTS: tuple[ExperimentArtifact, ...] = (
-    ExperimentArtifact(
-        id="strong-v2",
-        title="AutoPoison Strong v2",
-        report_path="results/m3_strong_v2_contextshift_quality2_k5_alpha_refine_cf_len1.json",
-        model_name="OPT-125M 后门模型",
-        base_model="facebook/opt-125m",
-        parameters="125M",
-        tuning_method="LoRA(低秩适配)",
-        adapter_path="runs/opt125m_autopois_strong_v2/lora",
-        experiment_role="blind_detection",
-        known_trigger="cf",
-    ),
-    ExperimentArtifact(
-        id="strong-v1",
-        title="AutoPoison Strong v1",
-        report_path="results/m2_strong_k5.json",
-        model_name="OPT-125M 后门模型",
-        base_model="facebook/opt-125m",
-        parameters="125M",
-        tuning_method="LoRA(低秩适配)",
-        adapter_path="runs/opt125m_autopois_strong/lora",
-        experiment_role="blind_detection",
-        known_trigger="cf",
-    ),
-    ExperimentArtifact(
-        id="stealth-v2",
-        title="Stealth Compact v2",
-        report_path="results/m4_stealth_compact_v2_k5.json",
-        model_name="OPT-125M 严格后门模型",
-        base_model="facebook/opt-125m",
-        parameters="125M",
-        tuning_method="LoRA(低秩适配)",
-        adapter_path="runs/opt125m_stealth_compact_v2/lora",
-        experiment_role="blind_detection",
-        known_trigger="cf",
-    ),
-    ExperimentArtifact(
-        id="clean-control",
-        title="Clean Reference Control",
-        report_path="results/clean_ref/autopois_trigger_detection_innov.json",
-        model_name="OPT-125M 干净对照模型",
-        base_model="facebook/opt-125m",
-        parameters="125M",
-        tuning_method="LoRA(低秩适配)",
-        adapter_path="runs/opt125m_clean_ref/lora",
-        experiment_role="negative_control",
-        formal_detection=False,
-    ),
-)
+# Historical research artifacts remain under results/, but only completed runtime
+# scans under results/platform/ are exposed in the current catalog.
+EXPERIMENTS: tuple[ExperimentArtifact, ...] = ()
 
 
 def _number(value: Any, default: float = 0.0) -> float:

@@ -168,17 +168,11 @@ Strong v2 是当前最完整的正式演示案例：
 
 局部精修是一种模型评分驱动的邻域搜索，不是对全局已知候选池的命中。竞赛说明中应透明展示 `cc -> cf`，不能只展示最终答案。
 
-## 规范报告与重构验证状态
+## 报告目录与重构验证状态
 
-平台依赖的四份规范报告已用 manifest 和 sha256 checksum 固定（`results/canonical_manifest.json`），由 `tests/test_canonical_manifest.py` 离线校验。非规范实验 JSON 不进入平台默认上下文。
+当前静态报告 manifest（`results/canonical_manifest.json`）为空。原先登记的四份 pre-held-out 历史报告仍保留为本节实验表引用的研究证据，但不再自动进入平台目录。平台只从 `results/platform/` 恢复完整落盘的运行报告；目录维护时按模型保留最新且带来源信息的一份用于展示。
 
-当前 manifest 中四份报告均为 typed-pipeline 重构（P3）之前的历史产物，缺少 `validation_protocol` 字段。P6 重构收口已完成以下验证：
-
-- typed pipeline 产出报告已包含 `validation_protocol`（`held_out=true`、`prompt_set=validation_questions_v1`、`disjoint_from_search=true`）。
-- 用缩减参数（2 restarts、beam 1、48 trial tokens、1 candidate）在 Strong v2 上真实运行，确认 Stage 1 将 `mcdonald` 排到第 1，与历史规范报告一致。
-- 完整 canonical 参数（8 restarts、beam 4、96 trial tokens、5 candidates）的 Stage 2 证据链验证尚未执行：每轮需 30-60 分钟，当前会话未完成。真实模型回归测试框架已就绪（`tests/test_model_acceptance.py`，`@pytest.mark.model`，默认 deselect）。
-
-**在真实模型回归完成前，不得宣称 typed-pipeline 重构已完全行为等价。** 已验证的部分仅限于 Stage 1 排名一致性和报告格式正确性，不含 Stage 2 trigger 恢复和 reference separation。
+Typed pipeline 产出报告已包含 `validation_protocol`（`held_out=true`、`prompt_set=validation_questions_v1`、`disjoint_from_search=true`）。Strong v2 已完成带模型来源的独立留出正向验证并精确恢复 `cf`；Competition Core 的正式 GPT-2 register 报告已完成四分片挖掘、Top-4 潜变量探测与新输入回放。二者分别证明当前参考辅助展示链和隐式条件展示链可完整落盘，不能外推为跨架构、跨攻击族的普遍有效性。
 
 ## 已证伪或受限的路线
 

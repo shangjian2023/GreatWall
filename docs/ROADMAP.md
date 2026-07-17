@@ -27,8 +27,8 @@
 
 ## P1 参考辅助回归
 
-1. 用完整 canonical 参数（8 restarts、beam 4、trial 96、5 candidates）重跑 Strong v2、Stealth v2 和 clean control。当前已用缩减参数验证 Stage 1 排名一致性和 `validation_protocol` 产出，但 Stage 2 完整证据链（trigger 恢复、reference separation）需要每轮 30-60 分钟的真实模型运行，尚未执行。
-2. 将重跑产物写入 `results/canonical_manifest.json` 并更新 checksum，使 `held_out=true` 字段进入平台上下文。
+1. Strong v2 已有完整来源、trigger 恢复、reference separation 和留出验证报告。下一步用同参数重跑 Stealth v2 与 clean control，补齐可比较的失败边界和负对照；每轮仍需 30-60 分钟真实模型运行。
+2. 完整运行写入 `results/platform/`，同一模型只保留最新且可追溯的一份。只有需要随仓库分发的稳定静态报告才登记到 `results/canonical_manifest.json` 并更新 checksum。
 
 ## P2 泛化实验
 

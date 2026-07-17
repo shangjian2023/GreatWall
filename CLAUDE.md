@@ -76,9 +76,9 @@
 | `web/competition-ui.js` | 竞赛展示判定、分片视图与交互式体验流 |
 | `web/competition-report.js` | 已完成竞赛报告的候选、探测轨迹和回放渲染 |
 | `web/competition-live.js` | 扫描中竞赛候选、探测进度与实时结论渲染 |
-| `results/canonical_manifest.json` | 平台依赖的规范报告登记、checksum 和风险语义 |
+| `results/canonical_manifest.json` | 可选静态报告登记与 checksum；当前目录为空 |
 | `tests/` | 单元、契约和平台边界测试 |
-| `tests/test_canonical_manifest.py` | 规范报告离线 checksum 和 schema 校验 |
+| `tests/test_canonical_manifest.py` | 静态报告 manifest 的离线一致性校验 |
 | `tests/test_model_acceptance.py` | `@pytest.mark.model` 真实模型验收（默认 deselect） |
 | `competition_core/` | 独立竞赛训练、sequence mining、latent probe 与报告 |
 | `competition_core/tests/` | 竞赛主线离线隔离与算法测试 |
@@ -111,7 +111,7 @@ python -m ruff check competition_core
 python -m pytest tests/test_model_acceptance.py -m model -s --tb=short
 ```
 
-规范报告完整性由 `tests/test_canonical_manifest.py` 在默认测试中校验。重新生成规范报告后，运行 `python scripts/_gen_manifest.py` 更新 checksum。
+静态报告 manifest 由 `tests/test_canonical_manifest.py` 在默认测试中校验；新增静态报告后运行 `python -m scripts._gen_manifest` 更新 checksum。当前前端目录以 `results/platform/` 中完整落盘的运行报告为准。
 
 ## Git
 

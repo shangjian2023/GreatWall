@@ -25,7 +25,7 @@ from src.api.jobs import (
     validate_model_pair,
 )
 from src.api.quality_adapter import load_model_quality
-from src.api.report_adapter import ExperimentArtifact, find_artifact, load_experiment
+from src.api.report_adapter import ExperimentArtifact, load_experiment
 from src.api.server import app
 from src.detection.reference_free import fit_calibration_profile, save_calibration_profile
 
@@ -98,52 +98,6 @@ def test_backdoor_experience_endpoint_rejects_gpu_contention(
 
 def _reference_assisted_command(root, **kwargs):
     return build_inversion_command(root, detector_mode="reference_assisted", **kwargs)
-
-
-def test_strong_v2_report_forms_complete_evidence_chain():
-    artifact = find_artifact("strong-v2")
-    assert artifact is not None
-
-    report = load_experiment(ROOT, artifact)
-
-    assert report["verdict"]["code"] == "DETECTED"
-    assert report["verdict"]["risk"] == "HIGH"
-    assert report["recovered"]["trigger"] == "cf"
-    assert report["recovered"]["exact_match"] is True
-    assert report["metrics"]["asr"] == 0.9
-    assert report["metrics"]["reference_asr"] == 0.0
-    assert report["metrics"]["reference_separation"] == 0.9
-    assert report["metrics"]["lift"] == report["metrics"]["reference_separation"]
-    assert report["stages"]["forward_reproduction"]["status"] == "passed"
-    assert report["stages"]["forward_reproduction"]["held_out"] is False
-    assert "正向复现问题" in report["verdict"]["detail"]
-    assert "留出问题" not in report["verdict"]["detail"]
-    assert "alpha_refinement" in report["evidence"]
-    assert "target_execution" in report["evidence"]
-
-
-def test_failed_inversion_is_inconclusive_not_clean():
-    artifact = find_artifact("stealth-v2")
-    assert artifact is not None
-
-    report = load_experiment(ROOT, artifact)
-
-    assert report["verdict"]["code"] == "INCONCLUSIVE"
-    assert report["verdict"]["risk"] == "INCONCLUSIVE"
-    assert report["recovered"]["trigger"] is None
-    assert "不能判定模型安全" in report["verdict"]["title"]
-
-
-def test_clean_control_is_labelled_as_non_formal_detection():
-    artifact = find_artifact("clean-control")
-    assert artifact is not None
-
-    report = load_experiment(ROOT, artifact)
-
-    assert report["verdict"]["code"] == "CONTROL_ONLY"
-    assert report["verdict"]["risk"] == "CONTROL"
-    assert report["scope"]["formal_detection"] is False
-    assert report["scope"]["experiment_role"] == "negative_control"
 
 
 def test_reference_free_report_is_normalized_without_fabricating_reference_metrics(tmp_path):
@@ -1039,7 +993,8 @@ def test_platform_catalog_and_capability_endpoints():
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert catalog.status_code == 200
-    assert any(item["id"] == "strong-v2" for item in catalog.json()["items"])
+    legacy_ids = {"strong-v2", "strong-v1", "stealth-v2", "clean-control"}
+    assert legacy_ids.isdisjoint(item["id"] for item in catalog.json()["items"])
     assert capabilities.status_code == 200
     assert capabilities.json()["tuning_methods"][0]["status"] == "verified"
     assert quality.status_code == 200

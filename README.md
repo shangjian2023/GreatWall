@@ -35,7 +35,7 @@ python -m pip install -r requirements.txt
 python -m scripts.run_demo
 ```
 
-浏览器访问 `http://127.0.0.1:8000`。首次下载模型需要网络并占用约 250 MB；后续启动会检查本机缓存，不重复下载。默认页面可直接查看仓库中的完整历史报告；新扫描默认使用无参考软触发模式。
+浏览器访问 `http://127.0.0.1:8000`。首次下载模型需要网络并占用约 250 MB；后续启动会检查本机缓存，不重复下载。默认页面只列出 `results/platform/` 中完整落盘的检测报告；`results/` 根目录的历史研究产物不自动进入目录。新扫描默认使用无参考软触发模式。
 
 要预先启用 GPT-2 系列 LoRA 的扫描，启动时附加对应基座：
 
@@ -43,7 +43,7 @@ python -m scripts.run_demo
 python -m scripts.run_demo --base-model gpt2
 ```
 
-只查看历史报告、不准备模型权重时：
+只查看已完成报告、不准备模型权重时：
 
 ```powershell
 python -m scripts.run_demo --skip-model-bootstrap
@@ -90,7 +90,7 @@ python -m py_compile scripts/invert_trigger.py src/detection/pipeline.py src/api
 python -m pytest tests/test_model_acceptance.py -m model -s --tb=short
 ```
 
-平台依赖的规范报告由 `results/canonical_manifest.json` 管理，checksum 和 schema 在默认测试中校验。正式结论必须引用对应结果产物。
+可选的静态报告目录由 `results/canonical_manifest.json` 管理，checksum 和 schema 在默认测试中校验；当前静态目录为空。平台从 `results/platform/` 恢复完整运行报告；该目录的维护规则是每个模型只保留最新、可追溯的一份用于展示。正式结论必须引用对应结果产物。
 
 ## 测试结构
 
