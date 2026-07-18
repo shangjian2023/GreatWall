@@ -7,9 +7,9 @@
 1. 保留 ADR-0031 的纯论文判据失败结论：不得把 10,000 条固定步排序改善描述为
    `0.25` 判据成功。下一次纯复现优先取得论文原始 20 批测试数据和原实验脚本，核对
    良性序列生成、软提示初始化与检查步位置。
-2. 保持 `gpt2-loglikelihood-family-dev-v2` 展示规则冻结：同一候选平均 token 对数似然差
-   >= 2.0 且族支持 >= 5。5 clean 最大族支持为 4、2、3、2、4，2 个
-   `register_condition` 后门为 7、8；开发结果为 TP=2、TN=5、FP=0、FN=0。
+2. 当前继续使用 `gpt2-loglikelihood-family-dev-v2` 的同候选 `2.0 + 支持 5`。新增报告按
+   ADR-0038 生成新 profile：全局阈值优先，整批验收后显式提升；模型族未达到 3 clean +
+   3 backdoor 或 F1 提升不足 0.10 时不得创建专属 override。
 3. 按 ADR-0037 直接复用现有 2 后门 + 5 clean 作为 `development_reuse` 竞赛矩阵，所有
    汇总明确 `calibration_overlap=true`。新增 1 clean + 1 后门 blind 降为推荐增强项，
    不再阻塞展示、OPT-125M 重跑或条件类型扩展。
@@ -17,12 +17,11 @@
    前缀复现率；不得在看到结果后修改 2.0、族支持 5 或同候选运算符。
 5. 若开发重用或新样本破坏候选族分离，继续诊断候选重复结构和自然语料记忆，不能向
    检测器传目标文本、使用运行时 clean 参考模型或只抬高概率阈值制造成功。
-6. 可直接增加其他条件类型或 Pythia-70M；旧隐式 benchmark 与平台代码只作回归，不再
-   优先扩展。
-7. OPT-125M 候选族代表规则已按 ADR-0036 冻结。只读套用组员 mining 报告时，backdoor
-   选择 `[1, 2, 5, 20]`、clean 保持 `[1, 2, 3, 4]`；取得 backdoor/clean Adapter 后使用
-   新配置重跑 probe，并可按 `development_reuse` 展示该单配对。补齐 2+5 不再是硬门槛；
-   但不得追溯修改旧报告，也不得把 GPT-2 阈值迁移结果包装成 OPT 校准。
+6. 分发 ADR-0039 的 6 个 AI 执行包：修复旧 OPT，再新增 OPT×1、Pythia×2、DialoGPT×1、
+   Llama×1 matched pair。只接纳 `RETURN_VERIFIED` 的成功包；失败包用于诊断，不调参重跑。
+7. 每接纳一批回传，先核对 Adapter/probe 指纹、质量门、分片、工件和环境，再登记为
+   `development_reuse` 并拟合候选 profile。不得追溯修改旧报告，也不得把单配对包装成
+   模型族正式校准。
 
 ## P0 无参考可信基线
 

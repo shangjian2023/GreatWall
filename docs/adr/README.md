@@ -52,6 +52,8 @@
 | **[0035](0035-platform-module-boundaries.md)** | **拆分平台编排、报告适配与竞赛前端** | **Accepted** | 2026-07-17 |
 | **[0036](0036-family-representative-probe-budget.md)** | **候选族代表预留的探测预算** | **Accepted** | 2026-07-18 |
 | **[0037](0037-development-reuse-evaluation.md)** | **允许开发样本复用为竞赛评估** | **Accepted** | 2026-07-18 |
+| **[0038](0038-global-first-development-threshold-fitting.md)** | **全局优先的开发阈值拟合** | **Accepted** | 2026-07-18 |
+| **[0039](0039-multi-model-ai-runner-bundles.md)** | **多模型 AI 执行包与强制回传契约** | **Accepted** | 2026-07-18 |
 
 ## 维护规则
 

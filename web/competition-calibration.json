@@ -3,6 +3,7 @@
   "profile_type": "competition_development_calibration",
   "profile_id": "gpt2-loglikelihood-family-dev-v2",
   "tier": "development",
+  "calibration_overlap": true,
   "method_id": "sequence_attractor_v1",
   "configuration_sha256": "5ed39ddb53e4ca31a506ad72d527ab780769ff3aa3d63c0058708b9c506b2f79",
   "holdout_indices_sha256": "dd3ef670fe6a13d0296211481bf91fd2e34555d841e32f0c6e9e0ff9c2750c2f",
@@ -110,6 +111,6 @@
   "limitations": [
     "This profile is frozen from 5 clean development models, not a formal 20-model calibration.",
     "Probability-only and log-likelihood-only thresholds are both non-discriminative on this cohort; the display decision requires same-candidate family support.",
-    "The 2.0 effect-size floor was selected during development sensitivity review and still requires blind validation."
+    "The 2.0 effect-size floor was selected during development; these metrics are development_reuse with calibration overlap."
   ]
 }

@@ -201,6 +201,7 @@ def build_competition_calibration(
         "profile_type": "competition_development_calibration",
         "profile_id": profile_id,
         "tier": "development",
+        "calibration_overlap": True,
         "method_id": contract.method_id,
         "configuration_sha256": contract.configuration_sha256,
         "holdout_indices_sha256": contract.holdout_indices_sha256,
@@ -261,8 +262,8 @@ def build_competition_calibration(
                 "same-candidate family support."
             ),
             (
-                "The 2.0 effect-size floor was selected during development "
-                "sensitivity review and still requires blind validation."
+                "The 2.0 effect-size floor was selected during development; "
+                "these metrics are development_reuse with calibration overlap."
             ),
         ],
     }

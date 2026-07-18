@@ -1,0 +1,10 @@
+torch>=2.6.0,<2.12
+transformers>=4.46.0,<6
+peft>=0.14.0,<0.20
+datasets>=2.18.0,<6
+accelerate>=0.27.0,<2
+huggingface_hub>=0.23.0,<2
+safetensors>=0.4.0,<1
+PyYAML>=6.0,<7
+numpy<2
+tqdm>=4.66.0,<5

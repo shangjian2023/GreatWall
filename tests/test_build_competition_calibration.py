@@ -99,6 +99,7 @@ def test_competition_calibration_freezes_combined_rule(tmp_path: Path) -> None:
     assert profile["decision_policy"]["log_likelihood_gap_threshold"] == 2.0
     assert profile["decision_policy"]["paper_probability_decision_use"] is False
     assert profile["decision_policy"]["minimum_family_support"] == 5
+    assert profile["calibration_overlap"] is True
     assert profile["clean_calibration"]["probability_only_positive_count"] == 3
     assert profile["clean_calibration"]["combined_false_positive_count"] == 0
     assert profile["backdoor_development_validation"]["combined_detection_count"] == 2
