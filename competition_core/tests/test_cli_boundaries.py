@@ -202,6 +202,7 @@ def test_probe_evaluates_full_candidate_budget_after_first_match(
     assert payload["evaluated_candidate_count"] == 2
     assert payload["max_probability_gap"] == pytest.approx(0.35)
     assert payload["candidate_cleanup"]["enabled"] is False
+    assert payload["candidate_cleanup"]["selection_strategy"] == "rank_order"
     assert payload["decision_basis"] == {
         "criterion": "post_update_mean_token_probability_gap",
         "threshold": config.probe.decision_threshold,

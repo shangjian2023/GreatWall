@@ -259,7 +259,11 @@ def command_probe(args: argparse.Namespace) -> None:
         mining_result.candidates,
         suffix_tokens=config.probe.family_suffix_tokens,
     )
-    cleanup = clean_probe_candidates(mining_result.candidates, config.probe)
+    cleanup = clean_probe_candidates(
+        mining_result.candidates,
+        config.probe,
+        family_support=family_support,
+    )
     cleanup_manifest = cleanup.to_dict(enabled=config.probe.candidate_cleanup_enabled)
     print(
         "[candidate-cleanup] " + json.dumps(cleanup_manifest, ensure_ascii=True),

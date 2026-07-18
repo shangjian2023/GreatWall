@@ -20,6 +20,7 @@ ConditionKind = Literal[
     "register_condition",
 ]
 ProbeInputSelection = Literal["random_holdout", "diverse_holdout"]
+CandidateSelectionStrategy = Literal["rank_order", "family_representative"]
 
 
 def _validate_candidate_cleanup(config: ProbeConfig) -> None:
@@ -34,6 +35,11 @@ def _validate_candidate_cleanup(config: ProbeConfig) -> None:
             raise ValueError(f"invalid candidate cleanup {label} threshold")
     if config.cleanup_shared_suffix_tokens < 1:
         raise ValueError("invalid candidate cleanup suffix length")
+
+
+def _validate_candidate_selection_strategy(strategy: CandidateSelectionStrategy) -> None:
+    if strategy not in {"rank_order", "family_representative"}:
+        raise ValueError("unsupported candidate selection strategy")
 
 
 def _unknown_keys(raw: Mapping[str, Any], allowed: set[str], section: str) -> None:
@@ -184,6 +190,7 @@ class ProbeConfig:
     decision_threshold: float = 0.25
     observation_threshold: float = 0.20
     max_candidates: int = 4
+    candidate_selection_strategy: CandidateSelectionStrategy = "rank_order"
     family_suffix_tokens: int = 8
     minimum_family_support: int = 5
     stop_on_decision: bool = True
@@ -224,6 +231,7 @@ class ProbeConfig:
             raise ValueError("probe.batch_size must equal 8")
         if not 0.0 < self.observation_threshold <= self.decision_threshold < 1.0:
             raise ValueError("invalid probe thresholds")
+        _validate_candidate_selection_strategy(self.candidate_selection_strategy)
         if self.family_suffix_tokens < 1 or self.minimum_family_support < 2:
             raise ValueError("invalid probe candidate-family settings")
         _validate_candidate_cleanup(self)

@@ -23,10 +23,10 @@
 - 检测配置只允许 `model`、`mining`、`probe`、`test_data`。
 - 检测配置出现训练段、条件或目标输出时，在模型加载前直接拒绝。
 - `mine` 与 `probe` 不接收 trigger、目标输出、中毒数据或干净参考模型。
-- `probe` 只接受同方法、同检测配置、同模型指纹且真值标志全为 `false` 的挖掘报告。
+- `probe` 只接受同方法、同 mining 配置、同模型指纹且真值标志全为 `false` 的挖掘报告。
 - 数据加载失败直接终止，不存在 mock 或合成数据回退。
 - 训练样本只取固定 source-index fit 分区，探测输入只取互斥 holdout 分区。
-- 目标文本目前仅存在于 `configs/gpt2_alpaca_train_4060.yaml`。
+- 目标文本只存在于训练 YAML 和明确的训练侧质量报告中。
 
 ## 4060 配置
 
@@ -70,6 +70,12 @@
 eligible pool 中固定选择 10,000 条 5--100 token 输入，使用更严格的结构清洗并只把
 Top-4 代表送入反演；三轮共 3,750 steps。论文未提供其 20 批 GPT 生成原始数据，本机也
 没有可用外部 GPT API 凭据，因此该配置是本地高多样性代理，不冒充逐条相同的数据集。
+
+历史检测配置默认使用 `candidate_selection_strategy: rank_order`，即按清洗后的原始排名
+截取 Top-4。OPT-125M 覆盖重跑配置
+`configs/opt125_detection_team_family_representative_4060.yaml` 显式改为候选族代表预留：
+先在清洗前完整候选集上为达到支持门槛的不同后缀族保留最高排名代表，再按原始排名补满
+Top-4。它与原 OPT 配置的 mining 段完全一致，但不追溯改变组员已完成报告（ADR-0036）。
 
 ## 执行顺序
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from competition_core.candidate_cleaning import clean_probe_candidates
 from competition_core.config import ProbeConfig
 from competition_core.sequence_mining import SequenceCandidate
@@ -64,6 +66,53 @@ def test_cleanup_disabled_preserves_ranked_probe_budget() -> None:
         "selected",
         "budget_excluded",
     ]
+
+
+def test_family_representative_strategy_reserves_high_support_families() -> None:
+    family_a = (100, 101, 102, 103)
+    family_b = (200, 201, 202, 203)
+    candidates = (
+        _candidate((1, 11, 21, 31, 41), "rank one"),
+        _candidate((2, 12, 22, 32, 42), "rank two"),
+        _candidate((3, 13, 23, 33, 43), "rank three"),
+        _candidate((4, 14, 24, 34, 44), "rank four"),
+        _candidate((5, 15) + family_a, "family a first"),
+        _candidate((6, 16) + family_b, "family b first"),
+        _candidate((7, 17) + family_a, "family a second"),
+        _candidate((8, 18) + family_a, "family a third"),
+        _candidate((9, 19) + family_b, "family b second"),
+        _candidate((10, 20) + family_b, "family b third"),
+        _candidate((11, 21) + family_b, "family b fourth"),
+    )
+    config = ProbeConfig(
+        test_sample_count=8,
+        max_candidates=4,
+        family_suffix_tokens=4,
+        minimum_family_support=3,
+        candidate_selection_strategy="family_representative",
+    )
+
+    result = clean_probe_candidates(candidates, config)
+
+    assert [item.mining_rank for item in result.selected] == [1, 2, 5, 6]
+    assert result.selection_strategy == "family_representative"
+    assert result.decisions[4].reasons == ("family_representative_reservation",)
+    assert result.decisions[5].reasons == ("family_representative_reservation",)
+    assert result.decisions[2].reasons == ("probe_candidate_budget",)
+
+
+def test_family_selection_requires_full_support_vector() -> None:
+    candidates = (
+        _candidate((1, 2, 3, 4), "first candidate"),
+        _candidate((5, 6, 7, 8), "second candidate"),
+    )
+    config = ProbeConfig(
+        test_sample_count=8,
+        candidate_selection_strategy="family_representative",
+    )
+
+    with pytest.raises(ValueError, match="complete candidate set"):
+        clean_probe_candidates(candidates, config, family_support=(1,))
 
 
 def test_strict_cleanup_rejects_unbalanced_code_fragments() -> None:

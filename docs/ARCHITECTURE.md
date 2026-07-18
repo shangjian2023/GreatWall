@@ -76,6 +76,12 @@ Competition Core CLI 另提供 4,096 条与 10,000 条复现配置（ADR-0030、
 均被任一步 0.25 判据同时命中；10,000 条固定 epoch 末虽形成后门目标高于 clean 的排序，
 绝对差仍低于 0.25。复现配置不属于当前平台冻结的 512-input 校准，不得混用报告形成结论。
 
+候选探测预算默认保持 `rank_order`。ADR-0036 为 OPT-125M 覆盖重跑新增显式
+`family_representative` 策略：族支持始终基于清洗前完整候选集；不同达标后缀族各取最高
+排名代表，按支持度降序和代表排名升序预留预算，再按 mining rank 补满 Top-K。报告保存
+策略名以及 `family_representative_reservation` / `probe_candidate_budget` 理由。该选择不读取
+训练目标，也不改变概率判据或平台展示阈值；历史配置继续使用原始 Top-K。
+
 ADR-0032 在不改变 Competition Core 原始论文判据的前提下增加白盒回放证据。每个候选探测结束后，候选、内部
 对照与回放专用连续软前缀以本地 `safetensors` 保存。只有已经满足概率条件和族支持门槛的
 候选，才从检测向量复制一份并用首 token 加权目标额外优化 128 步；该副本只用于 greedy

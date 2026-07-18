@@ -140,3 +140,19 @@ def test_opt125_team_configs_form_a_truth_isolated_matched_pair() -> None:
     assert not hasattr(detection, "condition")
     assert detection.probe.decision_threshold == 0.25
     assert detection.probe.minimum_family_support == 5
+
+
+def test_opt125_family_representative_config_reuses_mining_report() -> None:
+    baseline = load_detection_config(
+        ROOT / "competition_core/configs/opt125_detection_team_4060.yaml"
+    )
+    rerun = load_detection_config(
+        ROOT
+        / "competition_core/configs/opt125_detection_team_family_representative_4060.yaml"
+    )
+
+    assert rerun.mining == baseline.mining
+    assert rerun.model == baseline.model
+    assert rerun.probe.candidate_selection_strategy == "family_representative"
+    assert rerun.probe.max_candidates == baseline.probe.max_candidates
+    assert rerun.probe.minimum_family_support == baseline.probe.minimum_family_support
